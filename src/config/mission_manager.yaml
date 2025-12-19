@@ -1,0 +1,12 @@
+# Mission Manager Configuration
+
+mission_manager_node:
+  ros__parameters:
+    # Mission file (YAML file containing waypoints)
+    mission_file: ''
+    
+    # Auto start mission on launch
+    auto_start: false
+    
+    # Waypoint tolerance
+    waypoint_tolerance: 0.2  # Distance in meters to consider waypoint reached

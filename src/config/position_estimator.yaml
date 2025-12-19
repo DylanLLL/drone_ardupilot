@@ -1,0 +1,15 @@
+# Position Estimator Configuration
+
+position_estimator_node:
+  ros__parameters:
+    # Marker map file (contains ArUco ID -> world position mapping)
+    marker_map_file: ''  # Leave empty to use camera-relative positioning
+    
+    # Vision positioning
+    use_vision_position: true  # Publish to MAVROS vision_pose topic
+    
+    # Publishing rate
+    publish_rate: 30.0
+    
+    # Confidence threshold
+    min_marker_confidence: 0.7

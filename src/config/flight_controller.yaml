@@ -1,0 +1,16 @@
+# Flight Controller Configuration
+
+flight_controller_node:
+  ros__parameters:
+    # Altitude settings
+    default_altitude: 1.5  # Default flight altitude in meters
+    takeoff_altitude: 1.5  # Takeoff altitude in meters
+    
+    # Velocity limits
+    max_velocity: 1.0  # Maximum velocity in m/s
+    
+    # Position tolerance
+    position_tolerance: 0.15  # Position tolerance in meters for waypoint reached
+    
+    # Control rate
+    control_rate: 20.0  # Control loop rate in Hz

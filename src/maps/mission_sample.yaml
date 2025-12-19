@@ -1,0 +1,41 @@
+# Sample Mission File
+# Defines waypoints for the drone to navigate through
+# Coordinates are in meters (x, y, z) in the world frame
+
+mission_name: "Single Racking Navigation"
+description: "Navigate along a single racking using ArUco markers"
+
+waypoints:
+  - x: 0.0
+    y: 0.0
+    z: 1.5
+    description: "Start position - above marker 0"
+  
+  - x: 2.0
+    y: 0.0
+    z: 1.5
+    description: "Mid racking - above marker 1"
+  
+  - x: 4.0
+    y: 0.0
+    z: 1.5
+    description: "End of racking - above marker 2"
+  
+  - x: 4.0
+    y: 2.0
+    z: 1.5
+    description: "Corner turn - above marker 3"
+  
+  - x: 2.0
+    y: 2.0
+    z: 1.5
+    description: "Return path - above marker 4"
+  
+  - x: 0.0
+    y: 0.0
+    z: 1.5
+    description: "Return to start"
+
+# Flight parameters
+altitude: 1.5  # meters
+max_speed: 1.0  # m/s

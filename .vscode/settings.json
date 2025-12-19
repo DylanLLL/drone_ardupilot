@@ -1,0 +1,31 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/gdnuser/ros2_ws/install/talosbot_teleop/lib/python3.10/site-packages",
+        "/home/gdnuser/ros2_ws/install/talosbot_custom_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/ros2_ws/install/talosbot_coordinate_saver/lib/python3.10/site-packages",
+        "/home/gdnuser/ros2_ws/install/mqtt_to_ros_bridge/lib/python3.10/site-packages",
+        "/home/gdnuser/ros2_ws/install/btcpp_ros2_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/ros2_ws/install/action_sample_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/install/actions_py/lib/python3.10/site-packages",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/install/my_robot_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/build/my_robot_controller",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/install/my_robot_controller/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/gdnuser/ros2_ws/install/talosbot_teleop/lib/python3.10/site-packages",
+        "/home/gdnuser/ros2_ws/install/talosbot_custom_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/ros2_ws/install/talosbot_coordinate_saver/lib/python3.10/site-packages",
+        "/home/gdnuser/ros2_ws/install/mqtt_to_ros_bridge/lib/python3.10/site-packages",
+        "/home/gdnuser/ros2_ws/install/btcpp_ros2_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/ros2_ws/install/action_sample_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/install/actions_py/lib/python3.10/site-packages",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/install/my_robot_interfaces/local/lib/python3.10/dist-packages",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/build/my_robot_controller",
+        "/home/gdnuser/Documents/testCLI/ros2test_ws/install/my_robot_controller/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "ros.distro": "humble"
+}

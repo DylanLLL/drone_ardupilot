@@ -1,0 +1,50 @@
+[0.231s] DEBUG:colcon:Command line arguments: ['/usr/bin/colcon', 'list', '-p', '--base-paths', '/home/gdnuser/warehouse_drone_nav']
+[0.231s] DEBUG:colcon:Parsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='list', build_base='build', ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['/home/gdnuser/warehouse_drone_nav'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=None, packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, allow_overriding=[], topological_order=False, names_only=False, paths_only=True, topological_graph=False, topological_graph_dot=False, topological_graph_density=False, topological_graph_legend=False, topological_graph_dot_cluster=False, topological_graph_dot_include_skipped=False, mixin_files=None, mixin=None, verb_parser=<colcon_mixin.mixin.mixin_argument.MixinArgumentDecorator object at 0x761af1882a40>, verb_extension=<colcon_package_information.verb.list.ListVerb object at 0x761af18818d0>, main=<bound method ListVerb.main of <colcon_package_information.verb.list.ListVerb object at 0x761af18818d0>>, mixin_verb=('list',))
+[0.838s] Level 1:colcon.colcon_core.package_discovery:discover_packages(colcon_meta) check parameters
+[0.838s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) check parameters
+[0.839s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) check parameters
+[0.839s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) check parameters
+[0.839s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) discover
+[0.839s] INFO:colcon.colcon_core.package_discovery:Crawling recursively for packages in '/home/gdnuser/warehouse_drone_nav'
+[0.839s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extensions ['ignore', 'ignore_ament_install']
+[0.839s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'ignore'
+[0.839s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'ignore_ament_install'
+[0.840s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extensions ['colcon_pkg']
+[0.840s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'colcon_pkg'
+[0.840s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extensions ['colcon_meta']
+[0.840s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'colcon_meta'
+[0.840s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extensions ['ros']
+[0.840s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'ros'
+[0.868s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extensions ['cmake', 'python']
+[0.868s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'cmake'
+[0.868s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'python'
+[0.868s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extensions ['python_setup_py']
+[0.868s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav) by extension 'python_setup_py'
+[0.869s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/log) by extensions ['ignore', 'ignore_ament_install']
+[0.869s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/log) by extension 'ignore'
+[0.869s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/log) ignored
+[0.869s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extensions ['ignore', 'ignore_ament_install']
+[0.869s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extension 'ignore'
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extension 'ignore_ament_install'
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extensions ['colcon_pkg']
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extension 'colcon_pkg'
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extensions ['colcon_meta']
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extension 'colcon_meta'
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extensions ['ros']
+[0.870s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/src) by extension 'ros'
+[0.876s] DEBUG:colcon.colcon_core.package_identification:Package '/home/gdnuser/warehouse_drone_nav/src' with type 'ros.ament_cmake' and name 'warehouse_drone_nav'
+[0.876s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extensions ['ignore', 'ignore_ament_install']
+[0.876s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'ignore'
+[0.876s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'ignore_ament_install'
+[0.876s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extensions ['colcon_pkg']
+[0.876s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'colcon_pkg'
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extensions ['colcon_meta']
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'colcon_meta'
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extensions ['ros']
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'ros'
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extensions ['cmake', 'python']
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'cmake'
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'python'
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extensions ['python_setup_py']
+[0.877s] Level 1:colcon.colcon_core.package_identification:_identify(/home/gdnuser/warehouse_drone_nav/tools) by extension 'python_setup_py'
+[0.877s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) using defaults

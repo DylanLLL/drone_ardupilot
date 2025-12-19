@@ -1,0 +1,45 @@
+# ArUco Marker Map
+# Defines the position of each ArUco marker in the world frame
+# Coordinates are in meters (x, y, z)
+
+markers:
+  - id: 0
+    position:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+    description: "Origin marker"
+  
+  - id: 1
+    position:
+      x: 2.0
+      y: 0.0
+      z: 0.0
+    description: "Marker along racking - 2m forward"
+  
+  - id: 2
+    position:
+      x: 4.0
+      y: 0.0
+      z: 0.0
+    description: "Marker along racking - 4m forward"
+  
+  - id: 3
+    position:
+      x: 4.0
+      y: 2.0
+      z: 0.0
+    description: "Corner marker"
+  
+  - id: 4
+    position:
+      x: 2.0
+      y: 2.0
+      z: 0.0
+    description: "Return path marker"
+
+# Notes:
+# - All markers are assumed to be on the ground (z = 0)
+# - X-axis: forward direction along racking
+# - Y-axis: lateral direction
+# - Z-axis: vertical (up)
