@@ -99,8 +99,39 @@ class FlightControllerNode(Node):
                 self.get_logger().warn('MAVROS disconnected!')
                 self.mavros_connected_logged = False
 
+    def _start_position_hold(self):
+        """Start holding current position when entering GUIDED mode"""
+        if self.current_pose is not None:
+            # Hold current position (X, Y, Z)
+            self.get_logger().info(
+                f'Holding position: X={self.current_pose.pose.position.x:.2f}m, '
+                f'Y={self.current_pose.pose.position.y:.2f}m, '
+                f'Z={self.current_pose.pose.position.z:.2f}m'
+            )
+
+            target = PoseStamped()
+            target.header.stamp = self.get_clock().now().to_msg()
+            target.header.frame_id = 'map'
+            target.pose.position.x = self.current_pose.pose.position.x
+            target.pose.position.y = self.current_pose.pose.position.y
+            target.pose.position.z = self.current_pose.pose.position.z
+            target.pose.orientation = self.current_pose.pose.orientation
+
+            self.target_pose = target
+        else:
+            self.get_logger().warn('Cannot start position hold - no position estimate available')
+            self.get_logger().warn('Make sure ArUco markers are visible to the camera')
+
     def state_callback(self, msg: State):
         """Callback for MAVROS state"""
+        # Detect mode change to GUIDED
+        if self.mavros_state is not None:
+            previous_mode = self.mavros_state.mode
+            if previous_mode != 'GUIDED' and msg.mode == 'GUIDED':
+                # Just switched to GUIDED mode - start position hold
+                self.get_logger().info('Switched to GUIDED mode - enabling position hold')
+                self._start_position_hold()
+
         self.mavros_state = msg
     
     def local_position_callback(self, msg: PoseStamped):
@@ -110,7 +141,7 @@ class FlightControllerNode(Node):
     def command_callback(self, msg: String):
         """Callback for high-level commands"""
         command = msg.data.lower()
-        
+
         if command == 'arm':
             self.arm()
         elif command == 'disarm':
@@ -119,6 +150,8 @@ class FlightControllerNode(Node):
             self.takeoff(self.takeoff_altitude)
         elif command == 'land':
             self.land()
+        elif command == 'hold' or command == 'hold_position':
+            self._start_position_hold()
         elif command.startswith('goto'):
             # Parse goto command: "goto x y z"
             try:
