@@ -225,6 +225,28 @@ class FlightControllerNode(Node):
         # First, set to GUIDED mode
         self.set_mode('GUIDED')
 
+        # Set target position at current location + altitude
+        # This ensures setpoints are published continuously
+        if self.current_pose is not None:
+            target = PoseStamped()
+            target.header.stamp = self.get_clock().now().to_msg()
+            target.header.frame_id = 'map'
+            target.pose.position.x = self.current_pose.pose.position.x
+            target.pose.position.y = self.current_pose.pose.position.y
+            target.pose.position.z = altitude
+            target.pose.orientation = self.current_pose.pose.orientation
+            self.target_pose = target
+        else:
+            # If no position available, set target at origin + altitude
+            target = PoseStamped()
+            target.header.stamp = self.get_clock().now().to_msg()
+            target.header.frame_id = 'map'
+            target.pose.position.x = 0.0
+            target.pose.position.y = 0.0
+            target.pose.position.z = altitude
+            target.pose.orientation.w = 1.0
+            self.target_pose = target
+
         # Then arm if not already armed
         is_armed = self.mavros_state is not None and self.mavros_state.armed
         if not is_armed:
