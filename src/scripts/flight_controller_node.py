@@ -6,54 +6,41 @@ Handles high-level flight commands and interfaces with ArduPilot via MAVROS
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, TwistStamped
-from mavros_msgs.msg import State, PositionTarget, AttitudeTarget
+from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from std_msgs.msg import String
 import numpy as np
-from enum import Enum
 from typing import Optional
-
-
-class FlightMode(Enum):
-    """Flight modes for the drone"""
-    MANUAL = "MANUAL"
-    STABILIZE = "STABILIZE"
-    GUIDED = "GUIDED"
-    AUTO = "AUTO"
-    LOITER = "LOITER"
-    RTL = "RTL"
-    LAND = "LAND"
 
 
 class FlightControllerNode(Node):
     """
     High-level flight controller for autonomous navigation
     """
-    
+
     def __init__(self):
-        super().__init__('flight_controller_node')
-        
+        super().__init__('flight_controller')
+
         # Declare parameters
         self.declare_parameter('default_altitude', 1.5)
         self.declare_parameter('takeoff_altitude', 1.5)
         self.declare_parameter('max_velocity', 1.0)
         self.declare_parameter('position_tolerance', 0.15)
         self.declare_parameter('control_rate', 20.0)
-        
+
         # Get parameters
         self.default_altitude = self.get_parameter('default_altitude').value
         self.takeoff_altitude = self.get_parameter('takeoff_altitude').value
         self.max_velocity = self.get_parameter('max_velocity').value
         self.position_tolerance = self.get_parameter('position_tolerance').value
         control_rate = self.get_parameter('control_rate').value
-        
+
         # State variables
         self.mavros_state: Optional[State] = None
         self.current_pose: Optional[PoseStamped] = None
         self.target_pose: Optional[PoseStamped] = None
-        self.is_armed = False
-        self.current_mode = ""
+        self.mavros_connected_logged = False
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -62,73 +49,59 @@ class FlightControllerNode(Node):
             self.state_callback,
             10
         )
-        
+
         self.local_position_sub = self.create_subscription(
             PoseStamped,
             '/drone/local_position',
             self.local_position_callback,
             10
         )
-        
+
         self.command_sub = self.create_subscription(
             String,
             '/drone/command',
             self.command_callback,
             10
         )
-        
+
         # Publishers
         self.setpoint_position_pub = self.create_publisher(
             PoseStamped,
             '/mavros/setpoint_position/local',
             10
         )
-        
-        self.setpoint_velocity_pub = self.create_publisher(
-            TwistStamped,
-            '/mavros/setpoint_velocity/cmd_vel',
-            10
-        )
-        
+
         # Service clients
         self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
         self.takeoff_client = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
         self.land_client = self.create_client(CommandTOL, '/mavros/cmd/land')
-        
+
         # Control timer
         self.control_timer = self.create_timer(
             1.0 / control_rate,
             self.control_loop
         )
-        
-        # Wait for MAVROS connection
-        self.get_logger().info('Waiting for MAVROS connection...')
-        self._wait_for_mavros()
-        
+
+        # MAVROS connection check timer (non-blocking)
+        self.mavros_check_timer = self.create_timer(1.0, self._check_mavros_connection)
+
         self.get_logger().info('Flight Controller Node initialized')
     
-    def _wait_for_mavros(self, timeout_sec=10.0):
-        """Wait for MAVROS to connect to flight controller"""
-        rate = self.create_rate(10)  # 10 Hz
-        start_time = self.get_clock().now()
-        
-        while rclpy.ok():
-            if self.mavros_state is not None and self.mavros_state.connected:
+    def _check_mavros_connection(self):
+        """Non-blocking check for MAVROS connection"""
+        if self.mavros_state is not None and self.mavros_state.connected:
+            if not self.mavros_connected_logged:
                 self.get_logger().info('MAVROS connected!')
-                break
-            
-            if (self.get_clock().now() - start_time).nanoseconds / 1e9 > timeout_sec:
-                self.get_logger().warn('MAVROS connection timeout')
-                break
-            
-            rate.sleep()
-    
+                self.mavros_connected_logged = True
+        else:
+            if self.mavros_connected_logged:
+                self.get_logger().warn('MAVROS disconnected!')
+                self.mavros_connected_logged = False
+
     def state_callback(self, msg: State):
         """Callback for MAVROS state"""
         self.mavros_state = msg
-        self.is_armed = msg.armed
-        self.current_mode = msg.mode
     
     def local_position_callback(self, msg: PoseStamped):
         """Callback for drone local position"""
@@ -158,11 +131,14 @@ class FlightControllerNode(Node):
             self.get_logger().warn(f'Unknown command: {command}')
     
     def control_loop(self):
-        """Main control loop"""
-        if self.target_pose is not None and self.is_armed:
-            # Publish setpoint
+        """Main control loop - publishes setpoints when armed"""
+        # Check if drone is armed and we have a target
+        is_armed = self.mavros_state is not None and self.mavros_state.armed
+
+        if self.target_pose is not None and is_armed:
+            # Publish setpoint continuously
             self.setpoint_position_pub.publish(self.target_pose)
-            
+
             # Check if target reached
             if self.current_pose is not None:
                 distance = self._calculate_distance(self.current_pose, self.target_pose)
@@ -174,14 +150,18 @@ class FlightControllerNode(Node):
     
     def arm(self):
         """Arm the drone"""
-        if not self.is_armed:
+        is_armed = self.mavros_state is not None and self.mavros_state.armed
+
+        if not is_armed:
             self.get_logger().info('Arming drone...')
             req = CommandBool.Request()
             req.value = True
-            
+
             future = self.arming_client.call_async(req)
             future.add_done_callback(self._arm_callback)
-    
+        else:
+            self.get_logger().info('Drone already armed')
+
     def _arm_callback(self, future):
         """Callback for arm service"""
         try:
@@ -192,17 +172,21 @@ class FlightControllerNode(Node):
                 self.get_logger().error('Failed to arm drone')
         except Exception as e:
             self.get_logger().error(f'Arm service call failed: {str(e)}')
-    
+
     def disarm(self):
         """Disarm the drone"""
-        if self.is_armed:
+        is_armed = self.mavros_state is not None and self.mavros_state.armed
+
+        if is_armed:
             self.get_logger().info('Disarming drone...')
             req = CommandBool.Request()
             req.value = False
-            
+
             future = self.arming_client.call_async(req)
             future.add_done_callback(self._disarm_callback)
-    
+        else:
+            self.get_logger().info('Drone already disarmed')
+
     def _disarm_callback(self, future):
         """Callback for disarm service"""
         try:
@@ -237,18 +221,19 @@ class FlightControllerNode(Node):
     def takeoff(self, altitude: float):
         """Execute takeoff to specified altitude"""
         self.get_logger().info(f'Taking off to {altitude}m...')
-        
+
         # First, set to GUIDED mode
         self.set_mode('GUIDED')
-        
+
         # Then arm if not already armed
-        if not self.is_armed:
+        is_armed = self.mavros_state is not None and self.mavros_state.armed
+        if not is_armed:
             self.arm()
-        
+
         # Set takeoff target
         req = CommandTOL.Request()
         req.altitude = altitude
-        
+
         future = self.takeoff_client.call_async(req)
         future.add_done_callback(self._takeoff_callback)
     
