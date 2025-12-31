@@ -12,4 +12,4 @@ position_estimator_node:
     publish_rate: 30.0
     
     # Confidence threshold
-    min_marker_confidence: 0.7
+    min_marker_confidence: 0.85

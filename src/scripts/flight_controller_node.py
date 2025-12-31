@@ -27,6 +27,7 @@ class FlightControllerNode(Node):
         self.declare_parameter('takeoff_altitude', 1.5)
         self.declare_parameter('max_velocity', 1.0)
         self.declare_parameter('position_tolerance', 0.15)
+        self.declare_parameter('position_deadband', 0.05)
         self.declare_parameter('control_rate', 20.0)
 
         # Get parameters
@@ -34,6 +35,7 @@ class FlightControllerNode(Node):
         self.takeoff_altitude = self.get_parameter('takeoff_altitude').value
         self.max_velocity = self.get_parameter('max_velocity').value
         self.position_tolerance = self.get_parameter('position_tolerance').value
+        self.position_deadband = self.get_parameter('position_deadband').value
         control_rate = self.get_parameter('control_rate').value
 
         # State variables
@@ -169,17 +171,34 @@ class FlightControllerNode(Node):
         is_armed = self.mavros_state is not None and self.mavros_state.armed
 
         if self.target_pose is not None and is_armed:
-            # Publish setpoint continuously
-            self.setpoint_position_pub.publish(self.target_pose)
-
-            # Check if target reached
+            # Check if target reached and show position error
             if self.current_pose is not None:
+                # Calculate position error (target - current)
+                error_x = self.target_pose.pose.position.x - self.current_pose.pose.position.x
+                error_y = self.target_pose.pose.position.y - self.current_pose.pose.position.y
+                error_z = self.target_pose.pose.position.z - self.current_pose.pose.position.z
+
                 distance = self._calculate_distance(self.current_pose, self.target_pose)
+
+                # Only publish setpoint if error exceeds deadband (reduces oscillations)
+                if distance > self.position_deadband:
+                    self.setpoint_position_pub.publish(self.target_pose)
+
+                # Log position error for diagnostics every 2 seconds
+                self.get_logger().info(
+                    f'Position Error: X={error_x:+.3f}m Y={error_y:+.3f}m Z={error_z:+.3f}m | '
+                    f'Distance={distance:.3f}m',
+                    throttle_duration_sec=2.0
+                )
+
                 if distance < self.position_tolerance:
                     self.get_logger().info(
                         f'Target reached (distance: {distance:.3f}m)',
                         throttle_duration_sec=2.0
                     )
+            else:
+                # No current position available, still publish setpoint
+                self.setpoint_position_pub.publish(self.target_pose)
     
     def arm(self):
         """Arm the drone"""

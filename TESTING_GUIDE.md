@@ -310,6 +310,160 @@ Available commands:
 
 ---
 
+## Diagnosing Position Lock Behavior
+
+### Using the Position Monitor Tool
+
+The position monitor provides real-time visualization of position errors:
+
+```bash
+# Launch position monitor
+cd /home/gdnuser/warehouse_drone_nav
+python3 src/scripts/position_monitor.py
+```
+
+**What you'll see**:
+```
+══════════════════════════════════════════════════════════════════════
+  POSITION HOLD MONITOR
+══════════════════════════════════════════════════════════════════════
+
+  Current Position:    X: +0.045m  Y: -0.032m  Z: +0.605m
+  Target Position:     X: +0.000m  Y: +0.000m  Z: +0.600m
+  ──────────────────────────────────────────────────────────────────
+  Position Error:      X: -0.045m →  Y: +0.032m ↑  Z: -0.005m ↓
+
+  Distance from target: 0.056m
+  Status: ⚠ CORRECTING
+
+  Corrections needed:
+    ← Move LEFT   0.045m
+    ↓ Move BACK   0.032m
+    ↓ Move DOWN   0.005m
+══════════════════════════════════════════════════════════════════════
+```
+
+**How to interpret**:
+- **Negative X error (-0.045m)**: Drone is too far RIGHT → should move LEFT
+- **Positive Y error (+0.032m)**: Drone is too far BACK → should move FORWARD
+- **Negative Z error (-0.005m)**: Drone is too HIGH → should move DOWN
+
+### Bench Testing Position Response
+
+**Test 1: Verify Vision Updates**
+1. Arm drone in ALT_HOLD, hold where markers visible
+2. Launch position monitor
+3. Manually move drone RIGHT (10cm)
+4. **Expected**: X value INCREASES in "Current Position"
+5. Move drone FORWARD (10cm)
+6. **Expected**: Y value INCREASES
+
+**Test 2: Verify Correction Direction**
+1. With drone armed in GUIDED mode
+2. Position monitor shows target position
+3. Manually move drone RIGHT (10cm)
+4. **Expected**:
+   - Position Error shows: `X: -0.100m` (negative = too far right)
+   - Corrections show: `← Move LEFT  0.100m`
+5. Watch PWM outputs in Mission Planner:
+   - RIGHT motors (1 & 4) should INCREASE PWM
+   - LEFT motors (2 & 3) should DECREASE PWM
+
+This confirms the flight controller is trying to correct in the RIGHT direction!
+
+---
+
+## Fixing PWM Oscillations (CRITICAL)
+
+### Problem: Large PWM Oscillations (±200 PWM)
+
+If you see large, rapid PWM oscillations when in GUIDED mode, **DO NOT FLY**. This indicates the position controller is too aggressive and will cause instability in flight.
+
+### Root Cause
+
+ArduPilot's default PID gains are tuned for GPS-based navigation with slow updates (~5-10 Hz). Vision-based navigation updates much faster (~30 Hz) and can cause oscillations if gains are too high.
+
+### Solution: Reduce ArduPilot PID Gains
+
+**Using Mission Planner:**
+
+1. Connect to Pixhawk via Mission Planner
+2. Go to **CONFIG → Full Parameter List**
+3. Set these parameters:
+
+```
+# Position Controller (reduce by 50-70%)
+PSC_POSXY_P = 0.3      # Default: ~1.0
+PSC_POSZ_P = 0.3       # Default: ~1.0
+
+# Velocity Controller (reduce by 40-50%)
+PSC_VELXY_P = 0.8      # Default: ~2.0
+PSC_VELZ_P = 1.5       # Default: ~4.0
+
+# Add Low-Pass Filtering
+PSC_VELXY_FILT_HZ = 2.0   # Filter fast changes
+PSC_VELZ_FILT_HZ = 2.0    # Filter fast changes
+
+# Limit Accelerations
+PSC_ACC_XY_FILT = 10.0    # Smoother horizontal response
+PILOT_ACCEL_Z = 150       # Smoother vertical response
+```
+
+4. Click **Write Params**
+5. **Reboot** the flight controller
+
+### Verification After Tuning
+
+1. Bench test in GUIDED mode again
+2. Monitor PWM outputs
+3. **Expected**: PWM changes should be ±50 or less (smooth, gradual)
+4. If still oscillating, reduce PSC_POSXY_P and PSC_POSZ_P further (try 0.2)
+
+### Progressive Tuning Approach
+
+Start very conservative and increase gradually:
+
+**Step 1 - Very Soft** (start here):
+```
+PSC_POSXY_P = 0.2
+PSC_VELXY_P = 0.5
+```
+
+**Step 2 - Soft** (if too sluggish):
+```
+PSC_POSXY_P = 0.3
+PSC_VELXY_P = 0.8
+```
+
+**Step 3 - Moderate** (if stable, can try):
+```
+PSC_POSXY_P = 0.5
+PSC_VELXY_P = 1.2
+```
+
+**Goal**: Smooth, stable response without oscillations
+
+---
+
+## ROS2 Configuration Improvements
+
+The flight controller has been updated with oscillation reduction features:
+
+**In [src/config/flight_controller.yaml](src/config/flight_controller.yaml)**:
+```yaml
+control_rate: 10.0           # Reduced from 20.0 Hz for gentler control
+position_deadband: 0.05      # Ignore errors <5cm to reduce jitter
+```
+
+**Position Error Logging**: The flight controller now logs position errors every 2 seconds:
+```
+[flight_controller] Position Error: X=-0.045m Y=+0.032m Z=-0.005m | Distance=0.056m
+```
+
+This helps you verify that corrections are being calculated correctly.
+
+---
+
 ## Monitoring Commands
 
 ### Check MAVROS State
