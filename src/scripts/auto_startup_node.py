@@ -2,9 +2,17 @@
 """
 Auto Startup Node
 Automates the drone startup sequence:
+
+BENCH TEST MODE (default):
 1. Set mode to ALT_HOLD (altitude hold mode)
-2. Arm and takeoff to 50-60cm altitude
+2. Arm (skip takeoff command)
 3. Wait for ArUco tag detection, then switch to GUIDED mode for position lock
+
+REAL FLIGHT MODE (bench_test_mode=false):
+1. Set mode to GUIDED_NOGPS (enables autonomous takeoff without position estimate)
+2. Arm and takeoff to 50-60cm altitude automatically
+3. Wait for ArUco tag detection
+4. Switch to GUIDED mode for position lock when tag is detected
 """
 
 import rclpy
@@ -28,11 +36,13 @@ class AutoStartupNode(Node):
         self.declare_parameter('target_altitude', 0.55)  # 55cm default (between 50-60cm)
         self.declare_parameter('altitude_tolerance', 0.05)  # 5cm tolerance
         self.declare_parameter('startup_timeout', 30.0)  # 30 seconds timeout
+        self.declare_parameter('bench_test_mode', True)  # Skip actual takeoff command in bench test
 
         # Get parameters
         self.target_altitude = self.get_parameter('target_altitude').value
         self.altitude_tolerance = self.get_parameter('altitude_tolerance').value
         self.startup_timeout = self.get_parameter('startup_timeout').value
+        self.bench_test_mode = self.get_parameter('bench_test_mode').value
 
         # State variables
         self.mavros_state = None
@@ -80,7 +90,13 @@ class AutoStartupNode(Node):
         time.sleep(2.0)
 
         # Start the automated sequence
-        self.get_logger().info('Starting automated drone startup sequence...')
+        if self.bench_test_mode:
+            self.get_logger().info('Starting automated drone startup sequence (BENCH TEST MODE)...')
+            self.get_logger().info('Using ALT_HOLD mode for bench testing')
+        else:
+            self.get_logger().info('Starting automated drone startup sequence (REAL FLIGHT MODE)...')
+            self.get_logger().info('Using GUIDED_NOGPS mode for autonomous takeoff')
+
         self.startup_start_time = self.get_clock().now()
         self.start_sequence()
 
@@ -103,16 +119,28 @@ class AutoStartupNode(Node):
     def start_sequence(self):
         """Start the automated startup sequence"""
         self.sequence_step = 1
-        self.set_althold_mode()
+        if self.bench_test_mode:
+            self.set_althold_mode()
+        else:
+            self.set_guided_nogps_mode()
 
     def set_althold_mode(self):
-        """Step 1: Set mode to ALT_HOLD"""
+        """Step 1: Set mode to ALT_HOLD (bench test only)"""
         self.get_logger().info('Step 1: Setting mode to ALT_HOLD (altitude hold)...')
         req = SetMode.Request()
         req.custom_mode = 'ALT_HOLD'
 
         future = self.set_mode_client.call_async(req)
         future.add_done_callback(self.althold_mode_callback)
+
+    def set_guided_nogps_mode(self):
+        """Step 1: Set mode to GUIDED_NOGPS (real flight only)"""
+        self.get_logger().info('Step 1: Setting mode to GUIDED_NOGPS (autonomous takeoff without GPS)...')
+        req = SetMode.Request()
+        req.custom_mode = 'GUIDED_NOGPS'
+
+        future = self.set_mode_client.call_async(req)
+        future.add_done_callback(self.guided_nogps_mode_callback)
 
     def althold_mode_callback(self, future):
         """Callback for ALT_HOLD mode setting"""
@@ -131,12 +159,26 @@ class AutoStartupNode(Node):
             self.get_logger().error(f'Set mode service call failed: {str(e)}')
             self.shutdown_node()
 
-    def arm_and_takeoff(self):
-        """Step 2: Arm the drone and initiate takeoff in ALT_HOLD mode"""
-        self.get_logger().info(f'Step 2: Arming and taking off to {self.target_altitude}m altitude...')
+    def guided_nogps_mode_callback(self, future):
+        """Callback for GUIDED_NOGPS mode setting"""
+        try:
+            response = future.result()
+            if response.mode_sent:
+                self.get_logger().info('GUIDED_NOGPS mode set successfully')
+                # Wait a moment for mode to stabilize, then proceed to arm and takeoff
+                time.sleep(1.0)
+                self.sequence_step = 2
+                self.arm_and_takeoff()
+            else:
+                self.get_logger().error('Failed to set GUIDED_NOGPS mode')
+                self.shutdown_node()
+        except Exception as e:
+            self.get_logger().error(f'Set mode service call failed: {str(e)}')
+            self.shutdown_node()
 
-        # In ALT_HOLD mode, we don't need to publish setpoints
-        # The flight controller will handle altitude hold automatically
+    def arm_and_takeoff(self):
+        """Step 2: Arm the drone and initiate takeoff"""
+        self.get_logger().info(f'Step 2: Arming and taking off to {self.target_altitude}m altitude...')
 
         # Arm the drone
         is_armed = self.mavros_state is not None and self.mavros_state.armed
@@ -147,7 +189,11 @@ class AutoStartupNode(Node):
             arm_future.add_done_callback(self.arm_callback)
         else:
             self.get_logger().info('Drone already armed')
-            self.initiate_takeoff()
+            if self.bench_test_mode:
+                self.get_logger().info('Bench test mode: Skipping takeoff command')
+                self.sequence_step = 3
+            else:
+                self.initiate_takeoff()
 
     def arm_callback(self, future):
         """Callback for arming"""
@@ -156,7 +202,14 @@ class AutoStartupNode(Node):
             if response.success:
                 self.get_logger().info('Drone armed successfully')
                 time.sleep(0.5)
-                self.initiate_takeoff()
+
+                if self.bench_test_mode:
+                    self.get_logger().info('Bench test mode: Skipping takeoff command')
+                    self.get_logger().info('In real flight, you would manually increase throttle in ALT_HOLD mode')
+                    self.get_logger().info('For now, waiting for altitude to reach target or ArUco detection...')
+                    self.sequence_step = 3
+                else:
+                    self.initiate_takeoff()
             else:
                 self.get_logger().error('Failed to arm drone')
                 self.shutdown_node()
@@ -178,13 +231,21 @@ class AutoStartupNode(Node):
             response = future.result()
             if response.success:
                 self.get_logger().info('Takeoff command sent successfully')
+                self.get_logger().info('Drone is autonomously taking off...')
                 self.sequence_step = 3
             else:
-                self.get_logger().error('Takeoff command failed')
-                self.shutdown_node()
+                if self.bench_test_mode:
+                    self.get_logger().error('Takeoff command failed (expected in bench test)')
+                    self.get_logger().info('Continuing to monitor for ArUco detection...')
+                else:
+                    self.get_logger().error('Takeoff command failed')
+                    self.get_logger().warn('Check if GUIDED_NOGPS mode supports takeoff on your flight controller')
+                    self.get_logger().info('Continuing to monitor altitude...')
+                self.sequence_step = 3
         except Exception as e:
             self.get_logger().error(f'Takeoff service call failed: {str(e)}')
-            self.shutdown_node()
+            self.get_logger().info('Continuing to monitor altitude anyway...')
+            self.sequence_step = 3
 
     def monitor_progress(self):
         """Monitor the progress of the startup sequence"""
@@ -198,7 +259,7 @@ class AutoStartupNode(Node):
             self.shutdown_node()
             return
 
-        # Step 3: Monitor altitude and wait for target
+        # Step 3: Monitor altitude and wait for target (or ArUco detection in bench test)
         if self.sequence_step == 3:
             current_alt = 0.0
             if self.current_pose is not None:
@@ -206,25 +267,38 @@ class AutoStartupNode(Node):
 
             alt_error = abs(current_alt - self.target_altitude)
 
-            # Log current altitude
-            self.get_logger().info(
-                f'Current altitude: {current_alt:.3f}m | Target: {self.target_altitude:.3f}m | Error: {alt_error:.3f}m',
-                throttle_duration_sec=1.0
-            )
-
-            # Check if we've reached target altitude
-            if alt_error < self.altitude_tolerance:
-                self.get_logger().info(
-                    f'Target altitude reached! Current: {current_alt:.3f}m'
-                )
+            # In bench test mode, skip to step 4 if ArUco is already detected
+            if self.bench_test_mode and self.aruco_detected:
+                self.get_logger().info('Bench test mode: ArUco detected, skipping altitude check')
                 self.sequence_step = 4
+            else:
+                # Log current altitude
+                self.get_logger().info(
+                    f'Current altitude: {current_alt:.3f}m | Target: {self.target_altitude:.3f}m | Error: {alt_error:.3f}m',
+                    throttle_duration_sec=2.0
+                )
 
-        # Step 4: Wait for ArUco tag detection, then switch to GUIDED mode
+                # Check if we've reached target altitude
+                if alt_error < self.altitude_tolerance:
+                    self.get_logger().info(
+                        f'Target altitude reached! Current: {current_alt:.3f}m'
+                    )
+                    self.sequence_step = 4
+
+        # Step 4: Wait for ArUco tag detection, then switch to GUIDED mode (if not already in GUIDED mode)
         if self.sequence_step == 4:
             if self.aruco_detected:
-                self.get_logger().info('ArUco tag detected! Switching to GUIDED mode for position lock...')
-                self.switch_to_guided()
-                self.sequence_step = 5
+                # Only switch to GUIDED if we're coming from ALT_HOLD or GUIDED_NOGPS
+                current_mode = self.mavros_state.mode if self.mavros_state else None
+
+                if current_mode != 'GUIDED':
+                    self.get_logger().info(f'ArUco tag detected! Switching from {current_mode} to GUIDED mode for position lock...')
+                    self.switch_to_guided()
+                    self.sequence_step = 5
+                else:
+                    # Already in GUIDED mode, just proceed
+                    self.get_logger().info('Already in GUIDED mode with ArUco detected')
+                    self.sequence_step = 5
             else:
                 self.get_logger().info(
                     'Waiting for ArUco tag detection to enable position lock...',
