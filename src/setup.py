@@ -29,6 +29,7 @@ setup(
             'position_estimator = warehouse_drone_nav.position_estimator_node:main',
             'flight_controller = warehouse_drone_nav.flight_controller_node:main',
             'mission_manager = warehouse_drone_nav.mission_manager_node:main',
+            'auto_startup = warehouse_drone_nav.auto_startup_node:main',
         ],
     },
 )
