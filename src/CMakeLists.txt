@@ -29,6 +29,7 @@ install(PROGRAMS
   scripts/position_estimator_node.py
   scripts/flight_controller_node.py
   scripts/mission_manager_node.py
+  scripts/auto_startup_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
