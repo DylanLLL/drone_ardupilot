@@ -166,11 +166,12 @@ class FlightControllerNode(Node):
             self.get_logger().warn(f'Unknown command: {command}')
     
     def control_loop(self):
-        """Main control loop - publishes setpoints when armed"""
-        # Check if drone is armed and we have a target
+        """Main control loop - publishes setpoints when armed AND in GUIDED mode"""
+        # Check if drone is armed, in GUIDED mode, and we have a target
         is_armed = self.mavros_state is not None and self.mavros_state.armed
+        is_guided = self.mavros_state is not None and self.mavros_state.mode == 'GUIDED'
 
-        if self.target_pose is not None and is_armed:
+        if self.target_pose is not None and is_armed and is_guided:
             # Check if target reached and show position error
             if self.current_pose is not None:
                 # Calculate position error (target - current)
