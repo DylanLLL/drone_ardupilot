@@ -42,6 +42,10 @@ class AltHoldAutonomousTakeoff(Node):
         self.mode_sent = False
         self.arm_sent = False
 
+        # Logging flags for one-time messages
+        self.waiting_state_logged = False
+        self.waiting_fcu_logged = False
+
         # =====================
         # QoS
         # =====================
@@ -154,11 +158,15 @@ class AltHoldAutonomousTakeoff(Node):
         # WAIT FOR FCU
         # ---------------------
         if self.state is None:
-            self.get_logger().info_once('Waiting for MAVROS state...')
+            if not self.waiting_state_logged:
+                self.get_logger().info('Waiting for MAVROS state...')
+                self.waiting_state_logged = True
             return
 
         if not self.state.connected:
-            self.get_logger().info_once('Waiting for FCU connection...')
+            if not self.waiting_fcu_logged:
+                self.get_logger().info('Waiting for FCU connection...')
+                self.waiting_fcu_logged = True
             return
 
         # ---------------------
