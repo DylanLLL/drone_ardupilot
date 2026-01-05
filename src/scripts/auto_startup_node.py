@@ -2,19 +2,35 @@
 
 import rclpy
 from rclpy.node import Node
-from mavros_msgs.msg import State, PositionTarget, AttitudeTarget
+from mavros_msgs.msg import State, OverrideRCIn, Altitude
 from mavros_msgs.srv import CommandBool, SetMode
 import time
-import math
 
 
-class AutonomousTakeoffNode(Node):
+class AltHoldAutonomousTakeoff(Node):
     def __init__(self):
-        super().__init__('autonomous_takeoff_node')
+        super().__init__('alt_hold_autonomous_takeoff')
 
+        # =====================
+        # PARAMETERS
+        # =====================
+        self.target_altitude = 1.0      # meters
+        self.takeoff_throttle = 1650    # climb
+        self.hover_throttle = 1500      # neutral
+        self.max_takeoff_time = 5.0     # seconds (failsafe)
+
+        # =====================
+        # STATE
+        # =====================
         self.state = None
+        self.altitude = None
+        self.start_altitude = None
+        self.phase = 0
+        self.phase_start = time.time()
 
-        # Subscribers
+        # =====================
+        # SUBSCRIBERS
+        # =====================
         self.create_subscription(
             State,
             '/mavros/state',
@@ -22,34 +38,49 @@ class AutonomousTakeoffNode(Node):
             10
         )
 
-        # Publishers
-        self.att_pub = self.create_publisher(
-            AttitudeTarget,
-            '/mavros/setpoint_raw/attitude',
+        self.create_subscription(
+            Altitude,
+            '/mavros/altitude',
+            self.altitude_cb,
             10
         )
 
-        self.vel_pub = self.create_publisher(
-            PositionTarget,
-            '/mavros/setpoint_raw/local',
+        # =====================
+        # PUBLISHERS
+        # =====================
+        self.rc_pub = self.create_publisher(
+            OverrideRCIn,
+            '/mavros/rc/override',
             10
         )
 
-        # Services
+        # =====================
+        # SERVICES
+        # =====================
         self.arm_srv = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.mode_srv = self.create_client(SetMode, '/mavros/set_mode')
 
         self.arm_srv.wait_for_service()
         self.mode_srv.wait_for_service()
 
-        # Timer (20 Hz)
-        self.timer = self.create_timer(0.05, self.loop)
+        # =====================
+        # TIMER
+        # =====================
+        self.timer = self.create_timer(0.05, self.loop)  # 20 Hz
 
-        self.phase = 0
-        self.phase_start = time.time()
+    # --------------------------------------------------
+    # CALLBACKS
+    # --------------------------------------------------
 
     def state_cb(self, msg):
         self.state = msg
+
+    def altitude_cb(self, msg):
+        self.altitude = msg.relative
+
+    # --------------------------------------------------
+    # HELPERS
+    # --------------------------------------------------
 
     def set_mode(self, mode):
         req = SetMode.Request()
@@ -61,79 +92,66 @@ class AutonomousTakeoffNode(Node):
         req.value = True
         self.arm_srv.call_async(req)
 
-    def publish_bootstrap_thrust(self, thrust):
-        msg = AttitudeTarget()
-        msg.header.stamp = self.get_clock().now().to_msg()
+    def publish_throttle(self, pwm):
+        msg = OverrideRCIn()
+        msg.channels = [0] * 18
+        msg.channels[2] = pwm  # RC channel 3 = throttle
+        self.rc_pub.publish(msg)
 
-        msg.type_mask = (
-            AttitudeTarget.IGNORE_ROLL_RATE |
-            AttitudeTarget.IGNORE_PITCH_RATE |
-            AttitudeTarget.IGNORE_YAW_RATE |
-            AttitudeTarget.IGNORE_ATTITUDE
-        )
-
-        msg.thrust = thrust
-        self.att_pub.publish(msg)
-
-    def publish_velocity(self, vz):
-        msg = PositionTarget()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-
-        msg.type_mask = (
-            PositionTarget.IGNORE_PX |
-            PositionTarget.IGNORE_PY |
-            PositionTarget.IGNORE_PZ |
-            PositionTarget.IGNORE_AFX |
-            PositionTarget.IGNORE_AFY |
-            PositionTarget.IGNORE_AFZ |
-            PositionTarget.IGNORE_YAW |
-            PositionTarget.IGNORE_YAW_RATE
-        )
-
-        msg.velocity.x = 0.0
-        msg.velocity.y = 0.0
-        msg.velocity.z = -vz  # NED: negative = up
-
-        self.vel_pub.publish(msg)
+    # --------------------------------------------------
+    # MAIN LOOP
+    # --------------------------------------------------
 
     def loop(self):
-        if self.state is None:
+        if self.state is None or self.altitude is None:
             return
 
-        # Phase 0 — Setup
+        # Phase 0 — setup
         if self.phase == 0:
-            self.get_logger().info('Setting GUIDED and arming')
-            self.set_mode('GUIDED')
+            self.get_logger().info('Setting ALT_HOLD and arming')
+            self.set_mode('ALT_HOLD')
             self.arm()
             self.phase = 1
             self.phase_start = time.time()
 
-        # Phase 1 — Bootstrap thrust
+        # Phase 1 — record ground altitude
         elif self.phase == 1:
-            self.publish_bootstrap_thrust(thrust=0.18)
+            self.start_altitude = self.altitude
+            self.get_logger().info(
+                f'Ground altitude recorded: {self.start_altitude:.2f} m'
+            )
+            self.phase = 2
+            self.phase_start = time.time()
 
-            if time.time() - self.phase_start > 1.0:
-                self.get_logger().info('Bootstrap complete, switching to velocity climb')
-                self.phase = 2
-                self.phase_start = time.time()
-
-        # Phase 2 — Velocity climb
+        # Phase 2 — climb
         elif self.phase == 2:
-            self.publish_velocity(vz=0.4)
+            current_height = self.altitude - self.start_altitude
 
-            if time.time() - self.phase_start > 3.0:
-                self.get_logger().info('Takeoff complete')
+            if current_height < self.target_altitude:
+                self.publish_throttle(self.takeoff_throttle)
+            else:
+                self.get_logger().info(
+                    f'Target altitude reached: {current_height:.2f} m'
+                )
                 self.phase = 3
 
-        # Phase 3 — Hover (zero climb)
-        elif self.phase == 3:
-            self.publish_velocity(vz=0.0)
+            # failsafe
+            if time.time() - self.phase_start > self.max_takeoff_time:
+                self.get_logger().error('Takeoff timeout!')
+                self.phase = 3
 
+        # Phase 3 — hold altitude
+        elif self.phase == 3:
+            self.publish_throttle(self.hover_throttle)
+            # stay here until external node switches to GUIDED
+
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 
 def main():
     rclpy.init()
-    node = AutonomousTakeoffNode()
+    node = AltHoldAutonomousTakeoff()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
