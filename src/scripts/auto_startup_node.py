@@ -29,9 +29,14 @@ class AltHoldAutonomousTakeoff(Node):
         self.phase = 0
         self.phase_start = time.time()
 
-        self.mavros_qos = QoSProfile(
+        self.mavros_sensor_qos = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+
+        self.mavros_cmd_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE
         )
 
         # =====================
@@ -41,14 +46,14 @@ class AltHoldAutonomousTakeoff(Node):
             State,
             '/mavros/state',
             self.state_cb,
-            self.mavros_qos
+            self.mavros_sensor_qos
         )
 
         self.create_subscription(
             Altitude,
             '/mavros/altitude',
             self.altitude_cb,
-            self.mavros_qos
+            self.mavros_sensor_qos
         )
 
         # =====================
@@ -57,7 +62,7 @@ class AltHoldAutonomousTakeoff(Node):
         self.rc_pub = self.create_publisher(
             OverrideRCIn,
             '/mavros/rc/override',
-            self.mavros_qos
+            self.mavros_cmd_qos
         )
 
         # =====================
