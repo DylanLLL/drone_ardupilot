@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from mavros_msgs.msg import State, OverrideRCIn, VFRHUD
+from mavros_msgs.msg import State, OverrideRCIn, VfrHud
 from mavros_msgs.srv import CommandBool, SetMode
 import time
 
@@ -59,7 +59,7 @@ class AltHoldAutonomousTakeoff(Node):
         )
 
         self.create_subscription(
-            VFRHUD,
+            VfrHud,
             '/mavros/vfr_hud',
             self.vfr_cb,
             self.mavros_sensor_qos
