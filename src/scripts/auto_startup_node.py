@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from mavros_msgs.msg import State, OverrideRCIn, VfrHud
 from mavros_msgs.srv import CommandBool, SetMode
+from geometry_msgs.msg import PoseStamped
 import time
 
 
@@ -21,6 +22,8 @@ class AltHoldAutonomousTakeoff(Node):
         self.hover_throttle = 1500        # neutral
         self.spinup_time = 1.5            # seconds
         self.max_takeoff_time = 6.0       # seconds failsafe
+        self.aruco_detection_timeout = 30.0  # seconds to wait for ArUco
+        self.aruco_stable_time = 2.0      # seconds of stable detection required
 
         # =====================
         # STATE
@@ -28,6 +31,10 @@ class AltHoldAutonomousTakeoff(Node):
         self.state = None
         self.altitude = None
         self.start_altitude = None
+        self.local_position = None
+        self.last_position_time = None
+        self.aruco_first_detected = None
+        self.guided_mode_sent = False
 
         self.phase = 0
         self.phase_start = time.time()
@@ -65,6 +72,13 @@ class AltHoldAutonomousTakeoff(Node):
             self.mavros_sensor_qos
         )
 
+        self.create_subscription(
+            PoseStamped,
+            '/drone/local_position',
+            self.position_cb,
+            10
+        )
+
         # =====================
         # PUBLISHERS
         # =====================
@@ -98,6 +112,11 @@ class AltHoldAutonomousTakeoff(Node):
     def vfr_cb(self, msg):
         self.altitude = msg.altitude
 
+    def position_cb(self, msg):
+        """Callback for ArUco-based local position"""
+        self.local_position = msg
+        self.last_position_time = time.time()
+
     # --------------------------------------------------
     # HELPERS
     # --------------------------------------------------
@@ -117,6 +136,13 @@ class AltHoldAutonomousTakeoff(Node):
         msg.channels = [0] * 18
         msg.channels[2] = pwm  # throttle = channel 3
         self.rc_pub.publish(msg)
+
+    def is_aruco_detected(self):
+        """Check if ArUco position is being received"""
+        if self.last_position_time is None:
+            return False
+        # Consider ArUco detected if we received position within last 0.5 seconds
+        return (time.time() - self.last_position_time) < 0.5
 
     # --------------------------------------------------
     # MAIN LOOP
@@ -198,11 +224,74 @@ class AltHoldAutonomousTakeoff(Node):
                 self.phase = 3
 
         # ---------------------
-        # PHASE 3 — HOVER
+        # PHASE 3 — HOVER & WAIT FOR ARUCO
         # ---------------------
         elif self.phase == 3:
             self.publish_throttle(self.hover_throttle)
-            # wait for GUIDED + vision takeover
+
+            # Check if ArUco is detected
+            if self.is_aruco_detected():
+                if self.aruco_first_detected is None:
+                    self.aruco_first_detected = time.time()
+                    self.get_logger().info('ArUco marker detected!')
+
+                # Check if detection is stable
+                stable_duration = time.time() - self.aruco_first_detected
+                if stable_duration >= self.aruco_stable_time:
+                    self.get_logger().info(
+                        f'ArUco stable for {stable_duration:.1f}s - switching to GUIDED mode'
+                    )
+                    self.phase = 4
+                    self.phase_start = time.time()
+                else:
+                    self.get_logger().info(
+                        f'ArUco detection stable: {stable_duration:.1f}s / {self.aruco_stable_time}s',
+                        throttle_duration_sec=1.0
+                    )
+            else:
+                # ArUco not detected - reset timer
+                if self.aruco_first_detected is not None:
+                    self.get_logger().warn('ArUco detection lost - waiting...')
+                    self.aruco_first_detected = None
+
+                # Check for timeout
+                hover_duration = time.time() - self.phase_start
+                if hover_duration > self.aruco_detection_timeout:
+                    self.get_logger().error(
+                        f'ArUco detection timeout after {hover_duration:.1f}s! '
+                        'Manual intervention required.'
+                    )
+                    # Stay in hover mode for manual takeover
+                else:
+                    self.get_logger().info(
+                        f'Waiting for ArUco detection... ({hover_duration:.0f}s / {self.aruco_detection_timeout:.0f}s)',
+                        throttle_duration_sec=2.0
+                    )
+
+        # ---------------------
+        # PHASE 4 — SWITCH TO GUIDED
+        # ---------------------
+        elif self.phase == 4:
+            # Continue hovering while switching modes
+            self.publish_throttle(self.hover_throttle)
+
+            if not self.guided_mode_sent:
+                self.get_logger().info('Switching to GUIDED mode for vision-based control')
+                self.set_mode('GUIDED')
+                self.guided_mode_sent = True
+
+            # Wait for mode change confirmation
+            if self.state.mode == 'GUIDED':
+                self.get_logger().info('GUIDED mode active - vision control enabled!')
+                self.get_logger().info('Auto-startup complete. Shutting down node.')
+                self.phase = 5
+
+        # ---------------------
+        # PHASE 5 — COMPLETE
+        # ---------------------
+        elif self.phase == 5:
+            # Stop publishing RC overrides - let flight controller take over
+            pass
 
 
 # --------------------------------------------------
