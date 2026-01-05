@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from mavros_msgs.msg import State, OverrideRCIn, Altitude
 from mavros_msgs.srv import CommandBool, SetMode
 import time
@@ -28,6 +29,11 @@ class AltHoldAutonomousTakeoff(Node):
         self.phase = 0
         self.phase_start = time.time()
 
+        self.mavros_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+
         # =====================
         # SUBSCRIBERS
         # =====================
@@ -35,14 +41,14 @@ class AltHoldAutonomousTakeoff(Node):
             State,
             '/mavros/state',
             self.state_cb,
-            10
+            self.mavros_qos
         )
 
         self.create_subscription(
             Altitude,
             '/mavros/altitude',
             self.altitude_cb,
-            10
+            self.mavros_qos
         )
 
         # =====================
@@ -51,7 +57,7 @@ class AltHoldAutonomousTakeoff(Node):
         self.rc_pub = self.create_publisher(
             OverrideRCIn,
             '/mavros/rc/override',
-            10
+            self.mavros_qos
         )
 
         # =====================
