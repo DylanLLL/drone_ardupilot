@@ -137,8 +137,10 @@ class AltHoldAutonomousTakeoff(Node):
 
     def publish_throttle(self, pwm):
         msg = OverrideRCIn()
-        msg.channels = [0] * 18
-        msg.channels[2] = pwm  # throttle = channel 3
+        # Use UINT16_MAX (65535) for channels to ignore (not override)
+        # 0 means "take control and set to 0", 65535 means "don't override"
+        msg.channels = [65535] * 18
+        msg.channels[2] = pwm  # throttle = channel 3 (index 2)
         self.rc_pub.publish(msg)
 
     def is_aruco_detected(self):
@@ -187,7 +189,7 @@ class AltHoldAutonomousTakeoff(Node):
                 return
 
             if self.state.armed:
-                self.get_logger().info('Vehicle armed')
+                self.get_logger().info('Vehicle armed - starting motor spinup')
                 self.phase = 1
                 self.phase_start = time.time()
 
@@ -196,6 +198,10 @@ class AltHoldAutonomousTakeoff(Node):
         # ---------------------
         elif self.phase == 1:
             self.publish_throttle(self.spinup_throttle)
+            self.get_logger().info(
+                f'Phase 1: Publishing throttle={self.spinup_throttle} PWM',
+                throttle_duration_sec=0.5
+            )
 
             if time.time() - self.phase_start > self.spinup_time:
                 self.get_logger().info('Motors spinning, starting climb')
