@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-Bench Test Takeoff - Simulates takeoff using position setpoints
+Force Throttle Test - Commands upward velocity to trigger motor spin
 """
 
 import rclpy
 from rclpy.node import Node
 from mavros_msgs.msg import State, PositionTarget
 from mavros_msgs.srv import CommandBool, SetMode
-from geometry_msgs.msg import PoseStamped
 import time
 
 
-class BenchTestTakeoffNode(Node):
+class ForceThrottleTestNode(Node):
     def __init__(self):
-        super().__init__('bench_test_takeoff_node')
+        super().__init__('force_throttle_test_node')
         
         self.mavros_state = None
-        self.current_altitude = 0.0
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -26,17 +24,10 @@ class BenchTestTakeoffNode(Node):
             10
         )
         
-        self.position_sub = self.create_subscription(
-            PoseStamped,
-            '/drone/local_position',
-            self.position_callback,
-            10
-        )
-        
-        # Publishers
-        self.setpoint_pub = self.create_publisher(
-            PoseStamped,
-            '/mavros/setpoint_position/local',
+        # Publishers - Use PositionTarget for velocity control
+        self.setpoint_raw_pub = self.create_publisher(
+            PositionTarget,
+            '/mavros/setpoint_raw/local',
             10
         )
         
@@ -44,29 +35,44 @@ class BenchTestTakeoffNode(Node):
         self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
         
+        # Timer for continuous publishing
+        self.setpoint_timer = self.create_timer(0.05, self.publish_velocity_setpoint)
+        self.target_velocity = 0.0
+        
         # Wait for services
-        self.get_logger().info('Waiting for MAVROS services...')
         self.arming_client.wait_for_service()
         self.set_mode_client.wait_for_service()
-        self.get_logger().info('✓ MAVROS services ready')
         
-        # Timer for continuous setpoint publishing
-        self.setpoint_timer = self.create_timer(0.05, self.publish_setpoint)  # 20 Hz
-        self.target_pose = None
-    
     def state_callback(self, msg):
         self.mavros_state = msg
     
-    def position_callback(self, msg):
-        self.current_altitude = msg.pose.position.z
-    
-    def publish_setpoint(self):
-        """Continuously publish setpoint"""
-        if self.target_pose is not None:
-            self.setpoint_pub.publish(self.target_pose)
+    def publish_velocity_setpoint(self):
+        """Publish velocity setpoint"""
+        msg = PositionTarget()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'map'
+        msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        
+        # Type mask: ignore position, use velocity
+        msg.type_mask = (
+            PositionTarget.IGNORE_PX |
+            PositionTarget.IGNORE_PY |
+            PositionTarget.IGNORE_PZ |
+            PositionTarget.IGNORE_AFX |
+            PositionTarget.IGNORE_AFY |
+            PositionTarget.IGNORE_AFZ |
+            PositionTarget.IGNORE_YAW |
+            PositionTarget.IGNORE_YAW_RATE
+        )
+        
+        # Command upward velocity
+        msg.velocity.x = 0.0
+        msg.velocity.y = 0.0
+        msg.velocity.z = -self.target_velocity  # NED frame: negative = up
+        
+        self.setpoint_raw_pub.publish(msg)
     
     def wait_for_state(self, timeout=10.0):
-        """Wait for MAVROS state to be received"""
         start_time = time.time()
         while self.mavros_state is None:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -75,142 +81,75 @@ class BenchTestTakeoffNode(Node):
         return True
     
     def set_mode(self, mode):
-        """Set flight mode"""
         req = SetMode.Request()
         req.custom_mode = mode
-        
         future = self.set_mode_client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        
-        if future.result() is not None:
-            return future.result().mode_sent
-        return False
+        return future.result().mode_sent if future.result() else False
     
     def arm(self):
-        """Arm the drone"""
         req = CommandBool.Request()
         req.value = True
-        
         future = self.arming_client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        
-        if future.result() is not None:
-            return future.result().success
-        return False
+        return future.result().success if future.result() else False
     
-    def set_target_position(self, x, y, z):
-        """Set target position"""
-        pose = PoseStamped()
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.header.frame_id = 'map'
-        pose.pose.position.x = x
-        pose.pose.position.y = y
-        pose.pose.position.z = z
-        pose.pose.orientation.w = 1.0
-        
-        self.target_pose = pose
-        self.get_logger().info(f'Target position set: [{x:.2f}, {y:.2f}, {z:.2f}]')
-    
-    def bench_test_sequence(self, target_altitude=0.7):
-        """
-        Bench test sequence (no actual takeoff command):
-        1. Set GUIDED mode
-        2. Arm
-        3. Publish position setpoints (simulates takeoff)
-        4. Monitor (motors won't actually spin without props, but commands are sent)
-        """
+    def force_throttle_test(self):
+        """Test with velocity command to force throttle"""
         self.get_logger().info('=' * 60)
-        self.get_logger().info('BENCH TEST TAKEOFF SEQUENCE')
-        self.get_logger().info('(No propellers - testing command flow only)')
+        self.get_logger().info('FORCE THROTTLE TEST')
         self.get_logger().info('=' * 60)
         
-        # Wait for MAVROS connection
         if not self.wait_for_state():
             self.get_logger().error('❌ Failed to connect to MAVROS')
             return False
         
-        self.get_logger().info('✓ MAVROS connected')
-        
-        # Step 1: Set GUIDED mode
-        self.get_logger().info('Step 1: Setting GUIDED mode...')
+        # Set GUIDED mode
+        self.get_logger().info('Setting GUIDED mode...')
         if not self.set_mode('GUIDED'):
-            self.get_logger().error('❌ Failed to set GUIDED mode')
             return False
-        
         time.sleep(1.0)
-        self.get_logger().info('✓ GUIDED mode set')
         
-        # Step 2: Start publishing setpoints BEFORE arming
-        self.get_logger().info('Step 2: Starting setpoint stream...')
-        self.set_target_position(0.0, 0.0, target_altitude)
-        time.sleep(2.0)  # Let setpoints stream for a bit
-        self.get_logger().info('✓ Setpoints streaming')
-        
-        # Step 3: Arm
-        self.get_logger().info('Step 3: Arming...')
-        if not self.arm():
-            self.get_logger().error('❌ Failed to arm')
-            return False
-        
+        # Start velocity setpoint
+        self.get_logger().info('Starting velocity setpoint (0 m/s)...')
+        self.target_velocity = 0.0
         time.sleep(2.0)
         
-        # # Verify armed
-        # rclpy.spin_once(self, timeout_sec=0.1)
-        # if not self.mavros_state.armed:
-        #     self.get_logger().error('❌ Drone not armed after arm command')
-        #     return False
+        # Arm
+        self.get_logger().info('Arming...')
+        if not self.arm():
+            return False
+        time.sleep(2.0)
         
-        self.get_logger().info('✓ Drone armed!')
-        
-        # Step 4: Monitor
-        self.get_logger().info(f'Step 4: Commanding climb to {target_altitude}m...')
-        self.get_logger().info('   (Motors would spin up if propellers were installed)')
-        self.get_logger().info('   Position setpoints are being published at 20 Hz')
-        
-        # Monitor for a few seconds
+        # Command upward velocity
         self.get_logger().info('')
-        self.get_logger().info('Monitoring for 10 seconds...')
+        self.get_logger().info('⚠️  COMMANDING UPWARD VELOCITY - MOTORS SHOULD SPIN!')
+        self.get_logger().info('Ramping up velocity command...')
         
-        for i in range(10):
-            rclpy.spin_once(self, timeout_sec=0.1)
-            self.get_logger().info(
-                f'  t={i+1}s | Mode: {self.mavros_state.mode} | '
-                f'Armed: {self.mavros_state.armed} | '
-                f'Alt: {self.current_altitude:.2f}m'
-            )
-            time.sleep(1.0)
+        for vel in [0.2, 0.5, 0.8, 1.0, 0.8, 0.5, 0.2, 0.0]:
+            self.target_velocity = vel
+            self.get_logger().info(f'Target velocity: {vel} m/s upward')
+            
+            # Monitor servo output
+            self.get_logger().info('Check servo outputs now with:')
+            self.get_logger().info('  ros2 topic echo /mavros/servo_output_raw')
+            time.sleep(3.0)
         
-        self.get_logger().info('=' * 60)
-        self.get_logger().info('✓ BENCH TEST SEQUENCE COMPLETED')
-        self.get_logger().info('=' * 60)
-        self.get_logger().info('Results:')
-        self.get_logger().info(f'  - Mode: {self.mavros_state.mode}')
-        self.get_logger().info(f'  - Armed: {self.mavros_state.armed}')
-        self.get_logger().info(f'  - Setpoints: Publishing continuously')
         self.get_logger().info('')
-        self.get_logger().info('NOTE: Altitude will not increase without propellers')
-        self.get_logger().info('      This is expected for bench testing')
-        self.get_logger().info('=' * 60)
-        
+        self.get_logger().info('✓ Test complete')
         return True
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = BenchTestTakeoffNode()
+    node = ForceThrottleTestNode()
     
     try:
-        # Execute bench test sequence
-        success = node.bench_test_sequence(target_altitude=1.5)
-        
+        success = node.force_throttle_test()
         if success:
-            node.get_logger().info('Press Ctrl+C to exit and disarm')
-            rclpy.spin(node)
-        else:
-            node.get_logger().error('BENCH TEST SEQUENCE FAILED')
-        
+            node.get_logger().info('Monitor servo outputs - values should increase above 1100')
     except KeyboardInterrupt:
-        node.get_logger().info('Shutting down...')
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
