@@ -13,3 +13,6 @@ position_estimator_node:
     
     # Confidence threshold
     min_marker_confidence: 0.85
+    
+    # Bootstrap mode - enables dummy position publishing before vision locks
+    enable_bootstrap_mode: true  # NEW
