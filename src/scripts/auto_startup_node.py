@@ -47,13 +47,14 @@ class ForceThrottleTestNode(Node):
         self.mavros_state = msg
     
     def publish_velocity_setpoint(self):
-        """Publish velocity setpoint"""
         msg = PositionTarget()
+
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'map'
+
+        # ArduPilot expects LOCAL_NED for guided velocity
         msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        
-        # Type mask: ignore position, use velocity
+
+        # Use ONLY velocity control
         msg.type_mask = (
             PositionTarget.IGNORE_PX |
             PositionTarget.IGNORE_PY |
@@ -64,13 +65,16 @@ class ForceThrottleTestNode(Node):
             PositionTarget.IGNORE_YAW |
             PositionTarget.IGNORE_YAW_RATE
         )
-        
-        # Command upward velocity
+
+        # Velocity command (NED frame)
         msg.velocity.x = 0.0
         msg.velocity.y = 0.0
-        msg.velocity.z = -self.target_velocity  # NED frame: negative = up
-        
+
+        # NED: negative Z = UP
+        msg.velocity.z = -self.target_velocity
+
         self.setpoint_raw_pub.publish(msg)
+
     
     def wait_for_state(self, timeout=10.0):
         start_time = time.time()
