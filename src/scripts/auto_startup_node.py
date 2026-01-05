@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from mavros_msgs.msg import State, OverrideRCIn, Altitude
+from mavros_msgs.msg import State, OverrideRCIn, VFRHUD
 from mavros_msgs.srv import CommandBool, SetMode
 import time
 
@@ -15,10 +15,12 @@ class AltHoldAutonomousTakeoff(Node):
         # =====================
         # PARAMETERS
         # =====================
-        self.target_altitude = 1.0      # meters
-        self.takeoff_throttle = 1650    # climb
-        self.hover_throttle = 1500      # neutral
-        self.max_takeoff_time = 5.0     # seconds (failsafe)
+        self.target_altitude = 1.0        # meters
+        self.spinup_throttle = 1150       # motor idle (baro unlock)
+        self.takeoff_throttle = 1650      # climb
+        self.hover_throttle = 1500        # neutral
+        self.spinup_time = 1.5            # seconds
+        self.max_takeoff_time = 6.0       # seconds failsafe
 
         # =====================
         # STATE
@@ -26,9 +28,16 @@ class AltHoldAutonomousTakeoff(Node):
         self.state = None
         self.altitude = None
         self.start_altitude = None
+
         self.phase = 0
         self.phase_start = time.time()
 
+        self.mode_sent = False
+        self.arm_sent = False
+
+        # =====================
+        # QoS
+        # =====================
         self.mavros_sensor_qos = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.BEST_EFFORT
@@ -50,9 +59,9 @@ class AltHoldAutonomousTakeoff(Node):
         )
 
         self.create_subscription(
-            Altitude,
-            '/mavros/altitude',
-            self.altitude_cb,
+            VFRHUD,
+            '/mavros/vfr_hud',
+            self.vfr_cb,
             self.mavros_sensor_qos
         )
 
@@ -86,8 +95,8 @@ class AltHoldAutonomousTakeoff(Node):
     def state_cb(self, msg):
         self.state = msg
 
-    def altitude_cb(self, msg):
-        self.altitude = msg.relative
+    def vfr_cb(self, msg):
+        self.altitude = msg.altitude
 
     # --------------------------------------------------
     # HELPERS
@@ -106,7 +115,7 @@ class AltHoldAutonomousTakeoff(Node):
     def publish_throttle(self, pwm):
         msg = OverrideRCIn()
         msg.channels = [0] * 18
-        msg.channels[2] = pwm  # RC channel 3 = throttle
+        msg.channels[2] = pwm  # throttle = channel 3
         self.rc_pub.publish(msg)
 
     # --------------------------------------------------
@@ -114,28 +123,66 @@ class AltHoldAutonomousTakeoff(Node):
     # --------------------------------------------------
 
     def loop(self):
-        if self.state is None or self.altitude is None:
+
+        # ---------------------
+        # WAIT FOR FCU
+        # ---------------------
+        if self.state is None:
+            self.get_logger().info_once('Waiting for MAVROS state...')
             return
 
-        # Phase 0 — setup
+        if not self.state.connected:
+            self.get_logger().info_once('Waiting for FCU connection...')
+            return
+
+        # ---------------------
+        # PHASE 0 — MODE + ARM
+        # ---------------------
         if self.phase == 0:
-            self.get_logger().info('Setting ALT_HOLD and arming')
-            self.set_mode('ALT_HOLD')
-            self.arm()
-            self.phase = 1
-            self.phase_start = time.time()
 
-        # Phase 1 — record ground altitude
+            if not self.mode_sent:
+                self.get_logger().info('Setting ALT_HOLD mode')
+                self.set_mode('ALT_HOLD')
+                self.mode_sent = True
+                return
+
+            if not self.arm_sent:
+                self.get_logger().info('Arming vehicle')
+                self.arm()
+                self.arm_sent = True
+                return
+
+            if self.state.armed:
+                self.get_logger().info('Vehicle armed')
+                self.phase = 1
+                self.phase_start = time.time()
+
+        # ---------------------
+        # PHASE 1 — MOTOR SPINUP
+        # ---------------------
         elif self.phase == 1:
-            self.start_altitude = self.altitude
-            self.get_logger().info(
-                f'Ground altitude recorded: {self.start_altitude:.2f} m'
-            )
-            self.phase = 2
-            self.phase_start = time.time()
+            self.publish_throttle(self.spinup_throttle)
 
-        # Phase 2 — climb
+            if time.time() - self.phase_start > self.spinup_time:
+                self.get_logger().info('Motors spinning, starting climb')
+                self.phase = 2
+                self.phase_start = time.time()
+
+        # ---------------------
+        # PHASE 2 — CLIMB
+        # ---------------------
         elif self.phase == 2:
+
+            # capture start altitude AFTER motors spin
+            if self.start_altitude is None and self.altitude is not None:
+                self.start_altitude = self.altitude
+                self.get_logger().info(
+                    f'Start altitude captured: {self.start_altitude:.2f} m'
+                )
+
+            if self.start_altitude is None:
+                return
+
             current_height = self.altitude - self.start_altitude
 
             if current_height < self.target_altitude:
@@ -146,15 +193,17 @@ class AltHoldAutonomousTakeoff(Node):
                 )
                 self.phase = 3
 
-            # failsafe
             if time.time() - self.phase_start > self.max_takeoff_time:
                 self.get_logger().error('Takeoff timeout!')
                 self.phase = 3
 
-        # Phase 3 — hold altitude
+        # ---------------------
+        # PHASE 3 — HOVER
+        # ---------------------
         elif self.phase == 3:
             self.publish_throttle(self.hover_throttle)
-            # stay here until external node switches to GUIDED
+            # wait for GUIDED + vision takeover
+
 
 # --------------------------------------------------
 # MAIN
