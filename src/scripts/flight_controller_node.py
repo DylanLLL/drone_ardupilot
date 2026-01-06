@@ -7,7 +7,7 @@ Handles high-level flight commands and interfaces with ArduPilot via MAVROS
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import State
+from mavros_msgs.msg import State, OverrideRCIn
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from std_msgs.msg import String
 import numpy as np
@@ -43,6 +43,7 @@ class FlightControllerNode(Node):
         self.current_pose: Optional[PoseStamped] = None
         self.target_pose: Optional[PoseStamped] = None
         self.mavros_connected_logged = False
+        self.last_mode = ""  # Track mode changes for logging
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -70,6 +71,13 @@ class FlightControllerNode(Node):
         self.setpoint_position_pub = self.create_publisher(
             PoseStamped,
             '/mavros/setpoint_position/local',
+            10
+        )
+
+        # RC Override publisher (for disabling RC in GUIDED mode)
+        self.rc_override_pub = self.create_publisher(
+            OverrideRCIn,
+            '/mavros/rc/override',
             10
         )
 
@@ -167,6 +175,10 @@ class FlightControllerNode(Node):
     
     def control_loop(self):
         """Main control loop - publishes setpoints when armed AND in GUIDED mode"""
+
+        # Manage RC override based on flight mode
+        self._manage_rc_override()
+
         # Check if drone is armed, in GUIDED mode, and we have a target
         is_armed = self.mavros_state is not None and self.mavros_state.armed
         is_guided = self.mavros_state is not None and self.mavros_state.mode == 'GUIDED'
@@ -370,6 +382,49 @@ class FlightControllerNode(Node):
         dy = pose1.pose.position.y - pose2.pose.position.y
         dz = pose1.pose.position.z - pose2.pose.position.z
         return np.sqrt(dx**2 + dy**2 + dz**2)
+
+    def _manage_rc_override(self):
+        """
+        Manage RC override based on flight mode.
+        In GUIDED mode: Override RC channels to 0 to disable RC input
+        In other modes: Release override (65535 = no override)
+
+        This ensures RC sticks don't interfere with autonomous control.
+        Safety: Mode switch can still change flight modes.
+        """
+        if self.mavros_state is None:
+            return
+
+        is_guided = self.mavros_state.mode == 'GUIDED'
+        is_armed = self.mavros_state.armed
+
+        # Create RC override message
+        msg = OverrideRCIn()
+        msg.channels = [65535] * 18  # Default: no override
+
+        if is_guided and is_armed:
+            # In GUIDED mode: Override sticks to 0 (disable RC input)
+            # Channels: 0=roll, 1=pitch, 2=throttle, 3=yaw
+            msg.channels[0] = 0  # Roll
+            msg.channels[1] = 0  # Pitch
+            msg.channels[2] = 0  # Throttle - CRITICAL: disable throttle stick
+            msg.channels[3] = 0  # Yaw
+            # Note: Channel 4+ (mode switch, aux switches) remain 65535 (not overridden)
+            # This allows pilot to still change flight modes for safety
+
+            # Log when we first enter this state
+            if self.last_mode != 'GUIDED':
+                self.get_logger().info('GUIDED mode: RC sticks disabled (mode switch still active)')
+        else:
+            # In other modes: Release all overrides
+            # All channels = 65535 means "don't override, use RC input"
+            if self.last_mode == 'GUIDED' and self.mavros_state.mode != 'GUIDED':
+                self.get_logger().info(f'{self.mavros_state.mode} mode: RC sticks re-enabled')
+
+        self.last_mode = self.mavros_state.mode
+
+        # Publish RC override
+        self.rc_override_pub.publish(msg)
 
 
 def main(args=None):

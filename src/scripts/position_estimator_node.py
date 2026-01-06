@@ -151,11 +151,11 @@ class PositionEstimatorNode(Node):
             
             if marker_id in self.marker_map:
                 # Transform from camera to world frame using known marker position
-                drone_position = self._estimate_drone_position_from_marker(
+                drone_position, drone_orientation = self._estimate_drone_position_from_marker(
                     marker_pose_camera,
                     self.marker_map[marker_id]
                 )
-                
+
                 # Create pose estimate
                 pose = PoseStamped()
                 pose.header.stamp = self.get_clock().now().to_msg()
@@ -163,10 +163,13 @@ class PositionEstimatorNode(Node):
                 pose.pose.position.x = drone_position[0]
                 pose.pose.position.y = drone_position[1]
                 pose.pose.position.z = drone_position[2]
-                
-                # For now, keep orientation from marker detection
-                pose.pose.orientation = marker_pose_camera.orientation
-                
+
+                # Use correctly transformed orientation
+                pose.pose.orientation.x = drone_orientation[0]
+                pose.pose.orientation.y = drone_orientation[1]
+                pose.pose.orientation.z = drone_orientation[2]
+                pose.pose.orientation.w = drone_orientation[3]
+
                 self.current_pose = pose
                 
                 # Mark vision as locked
@@ -190,25 +193,166 @@ class PositionEstimatorNode(Node):
         self,
         marker_pose_camera: PoseStamped,
         marker_position_world: np.ndarray
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
         """
-        Estimate drone position in world frame from marker detection
+        Estimate drone position AND orientation in world frame from marker detection.
+
+        This performs the full coordinate transformation chain:
+        1. marker_pose_camera: Marker pose in camera frame (from ArUco detection)
+        2. Apply camera-to-body transform (90° pitch for downward camera)
+        3. Invert to get body-to-marker transform
+        4. Apply marker world position to get drone world pose
+
+        Returns:
+            Tuple of (position_array, orientation_quaternion)
+            - position_array: [x, y, z] in world frame
+            - orientation_quaternion: (x, y, z, w) drone orientation in world frame
         """
-        # Extract translation from camera to marker
+
+        # Step 1: Extract marker pose in camera frame
         t_camera_marker = np.array([
             marker_pose_camera.position.x,
             marker_pose_camera.position.y,
             marker_pose_camera.position.z
         ])
-        
-        # Invert the transformation to get drone position
-        drone_position = marker_position_world.copy()
-        drone_position[0] -= t_camera_marker[0]  # X offset
-        drone_position[1] -= t_camera_marker[1]  # Y offset
-        drone_position[2] = abs(t_camera_marker[2])  # Altitude (positive up)
-        
-        return drone_position
-    
+
+        q_camera_marker = (
+            marker_pose_camera.orientation.x,
+            marker_pose_camera.orientation.y,
+            marker_pose_camera.orientation.z,
+            marker_pose_camera.orientation.w
+        )
+
+        # Convert to 4x4 homogeneous transformation matrix
+        R_camera_marker = self._quaternion_to_rotation_matrix(q_camera_marker)
+        T_camera_marker = np.eye(4)
+        T_camera_marker[0:3, 0:3] = R_camera_marker
+        T_camera_marker[0:3, 3] = t_camera_marker
+
+        # Step 2: Get camera-to-body transformation (accounts for 90° downward mount)
+        T_body_camera = self._get_camera_to_body_transform()
+
+        # Step 3: Compute marker pose in body frame
+        T_body_marker = T_body_camera @ T_camera_marker
+
+        # Step 4: Invert to get body pose relative to marker
+        # If marker is at position t in body frame, drone body is at -t in marker frame
+        T_marker_body = np.linalg.inv(T_body_marker)
+
+        # Step 5: Transform to world frame
+        # Marker position in world frame (known from map)
+        T_world_marker = np.eye(4)
+        T_world_marker[0:3, 3] = marker_position_world
+
+        # Drone body pose in world frame
+        T_world_body = T_world_marker @ T_marker_body
+
+        # Extract position
+        drone_position = T_world_body[0:3, 3].copy()
+
+        # Extract orientation
+        R_world_body = T_world_body[0:3, 0:3]
+        drone_orientation = self._rotation_matrix_to_quaternion(R_world_body)
+
+        # Log for debugging
+        self.get_logger().debug(
+            f'Marker in camera: t=[{t_camera_marker[0]:.3f}, {t_camera_marker[1]:.3f}, {t_camera_marker[2]:.3f}]'
+        )
+        self.get_logger().debug(
+            f'Drone position: [{drone_position[0]:.3f}, {drone_position[1]:.3f}, {drone_position[2]:.3f}]'
+        )
+
+        return drone_position, drone_orientation
+
+    def _quaternion_to_rotation_matrix(self, quat: Tuple[float, float, float, float]) -> np.ndarray:
+        """
+        Convert quaternion [x, y, z, w] to 3x3 rotation matrix
+        """
+        x, y, z, w = quat
+
+        # First row
+        r00 = 1 - 2*(y*y + z*z)
+        r01 = 2*(x*y - w*z)
+        r02 = 2*(x*z + w*y)
+
+        # Second row
+        r10 = 2*(x*y + w*z)
+        r11 = 1 - 2*(x*x + z*z)
+        r12 = 2*(y*z - w*x)
+
+        # Third row
+        r20 = 2*(x*z - w*y)
+        r21 = 2*(y*z + w*x)
+        r22 = 1 - 2*(x*x + y*y)
+
+        return np.array([[r00, r01, r02],
+                         [r10, r11, r12],
+                         [r20, r21, r22]])
+
+    def _rotation_matrix_to_quaternion(self, R_mat: np.ndarray) -> Tuple[float, float, float, float]:
+        """
+        Convert 3x3 rotation matrix to quaternion [x, y, z, w]
+        """
+        trace = np.trace(R_mat)
+
+        if trace > 0:
+            s = 0.5 / np.sqrt(trace + 1.0)
+            w = 0.25 / s
+            x = (R_mat[2, 1] - R_mat[1, 2]) * s
+            y = (R_mat[0, 2] - R_mat[2, 0]) * s
+            z = (R_mat[1, 0] - R_mat[0, 1]) * s
+        elif R_mat[0, 0] > R_mat[1, 1] and R_mat[0, 0] > R_mat[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R_mat[0, 0] - R_mat[1, 1] - R_mat[2, 2])
+            w = (R_mat[2, 1] - R_mat[1, 2]) / s
+            x = 0.25 * s
+            y = (R_mat[0, 1] + R_mat[1, 0]) / s
+            z = (R_mat[0, 2] + R_mat[2, 0]) / s
+        elif R_mat[1, 1] > R_mat[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R_mat[1, 1] - R_mat[0, 0] - R_mat[2, 2])
+            w = (R_mat[0, 2] - R_mat[2, 0]) / s
+            x = (R_mat[0, 1] + R_mat[1, 0]) / s
+            y = 0.25 * s
+            z = (R_mat[1, 2] + R_mat[2, 1]) / s
+        else:
+            s = 2.0 * np.sqrt(1.0 + R_mat[2, 2] - R_mat[0, 0] - R_mat[1, 1])
+            w = (R_mat[1, 0] - R_mat[0, 1]) / s
+            x = (R_mat[0, 2] + R_mat[2, 0]) / s
+            y = (R_mat[1, 2] + R_mat[2, 1]) / s
+            z = 0.25 * s
+
+        return (x, y, z, w)
+
+    def _get_camera_to_body_transform(self) -> np.ndarray:
+        """
+        Get transformation matrix from camera frame to drone body frame.
+        Camera is mounted facing straight down (90° pitch).
+
+        Camera frame (OpenCV): X=right, Y=down, Z=forward
+        When mounted downward:
+          - Camera +X points to drone RIGHT (+Y in body frame)
+          - Camera +Y points to drone BACK (-X in body frame)
+          - Camera +Z points to ground (drone +Z in body frame)
+
+        Body frame: X=forward, Y=right, Z=down
+
+        Returns 4x4 homogeneous transformation matrix
+        """
+        # Camera to Body rotation matrix
+        # Camera X -> Body Y
+        # Camera Y -> Body -X
+        # Camera Z -> Body Z
+        R_body_camera = np.array([
+            [ 0, -1,  0],   # Body X = -Camera Y
+            [ 1,  0,  0],   # Body Y = Camera X
+            [ 0,  0,  1]    # Body Z = Camera Z
+        ])
+
+        # Create 4x4 homogeneous transformation
+        T_body_camera = np.eye(4)
+        T_body_camera[0:3, 0:3] = R_body_camera
+
+        return T_body_camera
+
     def _use_camera_relative_pose(self, marker_pose_camera):
         """Use camera-relative positioning when marker map not available"""
         pose = PoseStamped()
