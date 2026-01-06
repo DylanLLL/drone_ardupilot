@@ -31,13 +31,11 @@ class PositionEstimatorNode(Node):
         self.declare_parameter('use_vision_position', True)
         self.declare_parameter('publish_rate', 30.0)
         self.declare_parameter('min_marker_confidence', 0.7)
-        self.declare_parameter('enable_bootstrap_mode', True)  # NEW
-        
+
         # Get parameters
         marker_map_file = self.get_parameter('marker_map_file').value
         self.use_vision_position = self.get_parameter('use_vision_position').value
         publish_rate = self.get_parameter('publish_rate').value
-        self.enable_bootstrap = self.get_parameter('enable_bootstrap_mode').value
         
         # Load marker map (ArUco ID -> world position)
         self.marker_map: Dict[int, np.ndarray] = {}
@@ -47,10 +45,9 @@ class PositionEstimatorNode(Node):
         # Current drone pose estimate
         self.current_pose: Optional[PoseStamped] = None
         self.pose_covariance = np.eye(6) * 0.1
-        
-        # Bootstrap state
+
+        # Vision state
         self.vision_locked = False
-        self.bootstrap_position = np.array([0.0, 0.0, 0.0])
         self.last_aruco_detection_time = None
         
         # MAVROS state
@@ -102,8 +99,6 @@ class PositionEstimatorNode(Node):
         )
         
         self.get_logger().info('Position Estimator Node initialized')
-        if self.enable_bootstrap:
-            self.get_logger().info('Bootstrap mode ENABLED - will publish dummy position until vision locks')
         if self.marker_map:
             self.get_logger().info(f'Loaded {len(self.marker_map)} markers from map')
         else:
@@ -237,19 +232,18 @@ class PositionEstimatorNode(Node):
     
     def publish_position(self):
         """Publish current position estimate to MAVROS and other topics"""
-        
-        # Bootstrap mode: publish dummy position if vision not locked
-        if self.enable_bootstrap and not self.vision_locked:
-            self._publish_bootstrap_position()
+
+        # Only publish if we have a valid position estimate
+        if self.current_pose is None:
+            self.get_logger().warn(
+                'No position estimate available - waiting for ArUco marker detection',
+                throttle_duration_sec=2.0
+            )
             return
-        
+
         # Check for vision timeout
         if self.vision_locked and self._check_vision_timeout():
             self.get_logger().warn('Vision lost! Holding last known position', throttle_duration_sec=2.0)
-        
-        # Normal operation with real vision
-        if self.current_pose is None:
-            return
         
         try:
             # Publish to MAVROS vision_pose for position feedback
@@ -279,44 +273,7 @@ class PositionEstimatorNode(Node):
             
         except Exception as e:
             self.get_logger().error(f'Error publishing position: {str(e)}')
-    
-    def _publish_bootstrap_position(self):
-        """
-        Publish bootstrap position (0, 0, 0) to allow EKF initialization
-        This enables arming in GUIDED mode before vision locks
-        """
-        try:
-            bootstrap_pose = PoseStamped()
-            bootstrap_pose.header.stamp = self.get_clock().now().to_msg()
-            bootstrap_pose.header.frame_id = 'map'
-            
-            # Publish origin position (0, 0, 0)
-            bootstrap_pose.pose.position.x = self.bootstrap_position[0]
-            bootstrap_pose.pose.position.y = self.bootstrap_position[1]
-            bootstrap_pose.pose.position.z = self.bootstrap_position[2]
-            
-            # Identity orientation
-            bootstrap_pose.pose.orientation.w = 1.0
-            bootstrap_pose.pose.orientation.x = 0.0
-            bootstrap_pose.pose.orientation.y = 0.0
-            bootstrap_pose.pose.orientation.z = 0.0
-            
-            # Publish to MAVROS with HIGH COVARIANCE to indicate low confidence
-            if self.use_vision_position:
-                self.vision_pose_pub.publish(bootstrap_pose)
-            
-            # Also publish to local topics
-            self.local_position_pub.publish(bootstrap_pose)
-            
-            # Log bootstrap status
-            self.get_logger().info(
-                '🔄 BOOTSTRAP MODE: Publishing dummy position (0, 0, 0) - waiting for ArUco detection',
-                throttle_duration_sec=2.0
-            )
-            
-        except Exception as e:
-            self.get_logger().error(f'Error publishing bootstrap position: {str(e)}')
-    
+
     def _broadcast_tf(self):
         """Broadcast transform from map to base_link"""
         if self.current_pose is None:
