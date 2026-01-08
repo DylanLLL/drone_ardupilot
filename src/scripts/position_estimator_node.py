@@ -197,11 +197,11 @@ class PositionEstimatorNode(Node):
         """
         Estimate drone position AND orientation in world frame from marker detection.
 
-        This performs the full coordinate transformation chain:
-        1. marker_pose_camera: Marker pose in camera frame (from ArUco detection)
-        2. Apply camera-to-body transform (90° pitch for downward camera)
-        3. Invert to get body-to-marker transform
-        4. Apply marker world position to get drone world pose
+        SIMPLIFIED approach for downward-facing camera detecting ground markers:
+        - Markers are on ground (world Z = 0)
+        - Camera points straight down
+        - Camera Z distance = drone altitude
+        - Camera X,Y offsets map to world X,Y offsets (with rotation correction)
 
         Returns:
             Tuple of (position_array, orientation_quaternion)
@@ -209,57 +209,45 @@ class PositionEstimatorNode(Node):
             - orientation_quaternion: (x, y, z, w) drone orientation in world frame
         """
 
-        # Step 1: Extract marker pose in camera frame
-        t_camera_marker = np.array([
-            marker_pose_camera.position.x,
-            marker_pose_camera.position.y,
-            marker_pose_camera.position.z
+        # Step 1: Extract marker offset in camera frame
+        cam_x = marker_pose_camera.position.x
+        cam_y = marker_pose_camera.position.y
+        cam_z = marker_pose_camera.position.z  # Distance to marker (= altitude since marker on ground)
+
+        # Step 2: Transform camera offsets to body/world frame
+        # For camera facing DOWN (90° pitch):
+        # - Camera +X (right in image) -> World +Y (right in world)
+        # - Camera +Y (down in image) -> World -X (when camera rotated, image top points forward)
+        # - Camera +Z (distance) -> Altitude above ground
+
+        # Marker offset in world frame (relative to drone)
+        # Camera sees marker at offset (cam_x, cam_y) from center
+        # This means DRONE is offset by NEGATIVE of this from marker
+        offset_x_world = -(-cam_y)  # Camera Y maps to -World X, then negate for drone offset = cam_y
+        offset_y_world = -(cam_x)     # Camera X maps to World Y, then negate for drone offset = -cam_x
+
+        # Step 3: Calculate drone world position
+        # Marker is at marker_position_world
+        # Drone is offset from marker by (offset_x_world, offset_y_world)
+        # Altitude is cam_z (distance from camera to ground marker)
+        drone_position = np.array([
+            marker_position_world[0] + offset_x_world,  # X position
+            marker_position_world[1] + offset_y_world,  # Y position
+            cam_z                                        # Z = altitude (camera distance to ground)
         ])
 
-        q_camera_marker = (
-            marker_pose_camera.orientation.x,
-            marker_pose_camera.orientation.y,
-            marker_pose_camera.orientation.z,
-            marker_pose_camera.orientation.w
-        )
-
-        # Convert to 4x4 homogeneous transformation matrix
-        R_camera_marker = self._quaternion_to_rotation_matrix(q_camera_marker)
-        T_camera_marker = np.eye(4)
-        T_camera_marker[0:3, 0:3] = R_camera_marker
-        T_camera_marker[0:3, 3] = t_camera_marker
-
-        # Step 2: Get camera-to-body transformation (accounts for 90° downward mount)
-        T_body_camera = self._get_camera_to_body_transform()
-
-        # Step 3: Compute marker pose in body frame
-        T_body_marker = T_body_camera @ T_camera_marker
-
-        # Step 4: Invert to get body pose relative to marker
-        # If marker is at position t in body frame, drone body is at -t in marker frame
-        T_marker_body = np.linalg.inv(T_body_marker)
-
-        # Step 5: Transform to world frame
-        # Marker position in world frame (known from map)
-        T_world_marker = np.eye(4)
-        T_world_marker[0:3, 3] = marker_position_world
-
-        # Drone body pose in world frame
-        T_world_body = T_world_marker @ T_marker_body
-
-        # Extract position
-        drone_position = T_world_body[0:3, 3].copy()
-
-        # Extract orientation
-        R_world_body = T_world_body[0:3, 0:3]
-        drone_orientation = self._rotation_matrix_to_quaternion(R_world_body)
+        # Step 4: Orientation - for now, assume level flight (no roll/pitch)
+        # TODO: Extract yaw from marker orientation if needed
+        drone_orientation = (0.0, 0.0, 0.0, 1.0)  # Identity quaternion (no rotation)
 
         # Log for debugging
-        self.get_logger().debug(
-            f'Marker in camera: t=[{t_camera_marker[0]:.3f}, {t_camera_marker[1]:.3f}, {t_camera_marker[2]:.3f}]'
+        self.get_logger().info(
+            f'Camera: X={cam_x:.3f}m Y={cam_y:.3f}m Z={cam_z:.3f}m | Offset: dX={offset_x_world:.3f}m dY={offset_y_world:.3f}m',
+            throttle_duration_sec=0.5
         )
-        self.get_logger().debug(
-            f'Drone position: [{drone_position[0]:.3f}, {drone_position[1]:.3f}, {drone_position[2]:.3f}]'
+        self.get_logger().info(
+            f'Marker@[{marker_position_world[0]:.2f},{marker_position_world[1]:.2f},0] -> Drone@[{drone_position[0]:.3f},{drone_position[1]:.3f},{drone_position[2]:.3f}]',
+            throttle_duration_sec=0.5
         )
 
         return drone_position, drone_orientation
@@ -328,23 +316,26 @@ class PositionEstimatorNode(Node):
         Camera is mounted facing straight down (90° pitch).
 
         Camera frame (OpenCV): X=right, Y=down, Z=forward
-        When mounted downward:
-          - Camera +X points to drone RIGHT (+Y in body frame)
-          - Camera +Y points to drone BACK (-X in body frame)
-          - Camera +Z points to ground (drone +Z in body frame)
+        When camera points DOWN and detects markers on GROUND:
+          - Camera +Z (forward/depth) = distance to ground = drone altitude
+          - Camera +X (right) maps to lateral offset
+          - Camera +Y (down when camera faces forward, but we're pitched 90°)
 
-        Body frame: X=forward, Y=right, Z=down
+        For downward-facing camera detecting ground markers:
+          - Camera X -> Body Y (camera right = drone right)
+          - Camera Y -> Body -X (camera down in image = drone forward when pitched)
+          - Camera Z -> Altitude (distance down to ground)
+
+        Body/World frame: X=forward (North), Y=right (East), Z=down
 
         Returns 4x4 homogeneous transformation matrix
         """
-        # Camera to Body rotation matrix
-        # Camera X -> Body Y
-        # Camera Y -> Body -X
-        # Camera Z -> Body Z
+        # Camera to Body rotation matrix for 90° pitch down
+        # When camera faces down, image top points forward
         R_body_camera = np.array([
-            [ 0, -1,  0],   # Body X = -Camera Y
-            [ 1,  0,  0],   # Body Y = Camera X
-            [ 0,  0,  1]    # Body Z = Camera Z
+            [ 0, -1,  0],   # Body X (forward) = -Camera Y (up in image)
+            [ 1,  0,  0],   # Body Y (right) = Camera X (right in image)
+            [ 0,  0,  1]    # Body Z (down) = Camera Z (depth/distance)
         ])
 
         # Create 4x4 homogeneous transformation
