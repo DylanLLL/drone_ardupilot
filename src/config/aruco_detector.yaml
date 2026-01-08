@@ -14,11 +14,10 @@ aruco_detector_node:
     # If ArUco reports wrong distance, adjust this factor
     # Formula: corrected_distance = measured_distance * distance_scale_factor
     # Example: If ArUco reports 1.33m when real is 0.5m, use 0.5/1.33 = 0.376
-    distance_scale_factor: 0.632  # Default: no correction (1.0 = no scaling)
+    distance_scale_factor: 1.0  # Default: no correction (1.0 = no scaling)
 
     # Visualization
     visualize: true
 
     # Publishing rate
     publish_rate: 30.0
-  
