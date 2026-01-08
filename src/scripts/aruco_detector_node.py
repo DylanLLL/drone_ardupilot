@@ -39,7 +39,7 @@ class ArucoDetectorNode(Node):
         self.marker_size = self.get_parameter('marker_size').value
         aruco_dict_name = self.get_parameter('aruco_dict_type').value
         self.visualize = self.get_parameter('visualize').value
-        self.distance_scale_factor = self.get_parameter('distance_scale_factor').value
+        self.distance_scale_factor = 0.632
         
         # Initialize CV Bridge
         self.bridge = CvBridge()
@@ -199,16 +199,24 @@ class ArucoDetectorNode(Node):
                     distance_raw = np.linalg.norm(tvec)
                     distance_corrected = np.linalg.norm(tvec_corrected)
 
+                    # Extract yaw angle from rotation matrix for orientation diagnostics
+                    import math
+                    # For a downward-facing camera detecting ground markers,
+                    # yaw indicates rotation around Z-axis (marker rotation on ground)
+                    yaw_rad = math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
+                    yaw_deg = math.degrees(yaw_rad)
+
                     if abs(self.distance_scale_factor - 1.0) > 0.01:
                         # Correction factor is active
                         self.get_logger().info(
-                            f'Marker ID {marker_id}: RAW={distance_raw:.3f}m -> CORRECTED={distance_corrected:.3f}m (scale={self.distance_scale_factor:.3f})',
+                            f'Marker ID {marker_id}: RAW={distance_raw:.3f}m -> CORRECTED={distance_corrected:.3f}m '
+                            f'| Yaw={yaw_deg:.1f}° (marker rotation)',
                             throttle_duration_sec=1.0
                         )
                     else:
                         # No correction
                         self.get_logger().info(
-                            f'Detected marker ID {marker_id} at distance {distance_raw:.3f}m',
+                            f'Detected marker ID {marker_id} at distance {distance_raw:.3f}m | Yaw={yaw_deg:.1f}°',
                             throttle_duration_sec=1.0
                         )
                 
@@ -229,11 +237,16 @@ class ArucoDetectorNode(Node):
     
     def _visualize_detections(self, image, corners, ids, rvecs, tvecs):
         """Draw detected markers and axes on image"""
+        import math
+
         # Draw detected markers
         aruco.drawDetectedMarkers(image, corners, ids)
-        
-        # Draw axes for each marker
+
+        # Draw axes and orientation info for each marker
         for i in range(len(ids)):
+            marker_id = ids[i][0]
+
+            # Draw 3D axes on marker (RED=X, GREEN=Y, BLUE=Z)
             cv2.drawFrameAxes(
                 image,
                 self.camera_matrix,
@@ -242,7 +255,41 @@ class ArucoDetectorNode(Node):
                 tvecs[i],
                 self.marker_size * 0.5
             )
-        
+
+            # Calculate yaw angle
+            rotation_matrix, _ = cv2.Rodrigues(rvecs[i])
+            yaw_rad = math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
+            yaw_deg = math.degrees(yaw_rad)
+
+            # Get marker center in image
+            corner = corners[i][0]
+            center_x = int(np.mean(corner[:, 0]))
+            center_y = int(np.mean(corner[:, 1]))
+
+            # Draw orientation info text
+            distance = np.linalg.norm(tvecs[i]) * self.distance_scale_factor
+            text = f"ID:{marker_id} D:{distance:.2f}m Yaw:{yaw_deg:.0f}deg"
+
+            # Background rectangle for text
+            (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+            cv2.rectangle(image,
+                         (center_x - 5, center_y - text_h - 10),
+                         (center_x + text_w + 5, center_y - 5),
+                         (0, 0, 0), -1)
+
+            # Text
+            cv2.putText(image, text,
+                       (center_x, center_y - 8),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+            # Draw orientation indicator arrow (shows marker "forward" direction)
+            # Arrow points in direction of marker's X-axis (RED axis)
+            arrow_length = 40
+            arrow_end_x = int(center_x + arrow_length * math.cos(yaw_rad))
+            arrow_end_y = int(center_y + arrow_length * math.sin(yaw_rad))
+            cv2.arrowedLine(image, (center_x, center_y), (arrow_end_x, arrow_end_y),
+                          (0, 0, 255), 3, tipLength=0.3)  # Red arrow
+
         self._publish_visualization(image)
     
     def _publish_visualization(self, image):
