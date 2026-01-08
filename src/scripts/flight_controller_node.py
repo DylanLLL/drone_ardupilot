@@ -6,7 +6,7 @@ Handles high-level flight commands and interfaces with ArduPilot via MAVROS
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseArray
 from mavros_msgs.msg import State, OverrideRCIn
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from std_msgs.msg import String
@@ -44,6 +44,7 @@ class FlightControllerNode(Node):
         self.target_pose: Optional[PoseStamped] = None
         self.mavros_connected_logged = False
         self.last_mode = ""  # Track mode changes for logging
+        self.latest_aruco_detection: Optional[PoseArray] = None  # Latest ArUco detections
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -64,6 +65,13 @@ class FlightControllerNode(Node):
             String,
             '/drone/command',
             self.command_callback,
+            10
+        )
+
+        self.aruco_sub = self.create_subscription(
+            PoseArray,
+            '/aruco/poses',
+            self.aruco_callback,
             10
         )
 
@@ -110,27 +118,84 @@ class FlightControllerNode(Node):
                 self.mavros_connected_logged = False
 
     def _start_position_hold(self):
-        """Start holding current position when entering GUIDED mode"""
-        if self.current_pose is not None:
-            # Hold current position (X, Y, Z)
-            self.get_logger().info(
-                f'Holding position: X={self.current_pose.pose.position.x:.2f}m, '
-                f'Y={self.current_pose.pose.position.y:.2f}m, '
-                f'Z={self.current_pose.pose.position.z:.2f}m'
-            )
+        """
+        Start centering over ArUco marker when entering GUIDED mode.
+        If ArUco marker detected: move to center of marker (X, Y) while maintaining current altitude (Z)
+        If no marker detected: hold current position
+        """
+        if self.current_pose is None:
+            self.get_logger().warn('Cannot start position hold - no position estimate available')
+            self.get_logger().warn('Make sure ArUco markers are visible to the camera')
+            return
+
+        # Get current altitude to maintain
+        current_altitude = self.current_pose.pose.position.z
+
+        # Check if ArUco marker is detected
+        if self.latest_aruco_detection is not None and len(self.latest_aruco_detection.poses) > 0:
+            # ArUco marker detected - calculate target position to center over marker
+            # The marker detection is in camera frame
+            # We need to find where the marker is in world frame
+
+            # Get marker offset in camera frame (first detected marker)
+            marker_camera = self.latest_aruco_detection.poses[0]
+            cam_x = marker_camera.position.x
+            cam_y = marker_camera.position.y
+            cam_z = marker_camera.position.z  # Distance to marker
+
+            # Transform camera offsets to world frame offsets
+            # For downward-facing camera:
+            # - Camera X (right) -> World Y (right)
+            # - Camera Y (down in image) -> World X (forward when camera pitched down)
+            # The marker is offset from drone center, so we need to move TO the marker
+            offset_x_world = cam_y      # Camera Y -> World X
+            offset_y_world = -cam_x     # Camera X -> -World Y (sign corrected)
+
+            # Calculate target position: current position + offset to marker
+            # This moves the drone so marker is centered under camera
+            target_x = self.current_pose.pose.position.x + offset_x_world
+            target_y = self.current_pose.pose.position.y + offset_y_world
+            target_z = current_altitude  # Maintain current altitude
+
+            self.get_logger().info('=' * 60)
+            self.get_logger().info('GUIDED Mode: Centering over ArUco marker')
+            self.get_logger().info(f'Current position: [{self.current_pose.pose.position.x:.3f}, '
+                                 f'{self.current_pose.pose.position.y:.3f}, '
+                                 f'{current_altitude:.3f}]')
+            self.get_logger().info(f'Marker offset in camera: X={cam_x:.3f}m, Y={cam_y:.3f}m, Z={cam_z:.3f}m')
+            self.get_logger().info(f'World offset to marker: dX={offset_x_world:.3f}m, dY={offset_y_world:.3f}m')
+            self.get_logger().info(f'Target position (marker center): [{target_x:.3f}, {target_y:.3f}, {target_z:.3f}]')
+            self.get_logger().info('=' * 60)
+
+            target = PoseStamped()
+            target.header.stamp = self.get_clock().now().to_msg()
+            target.header.frame_id = 'map'
+            target.pose.position.x = target_x
+            target.pose.position.y = target_y
+            target.pose.position.z = target_z
+            target.pose.orientation = self.current_pose.pose.orientation
+
+            self.target_pose = target
+
+        else:
+            # No ArUco marker detected - fall back to holding current position
+            self.get_logger().warn('=' * 60)
+            self.get_logger().warn('GUIDED Mode: No ArUco marker detected')
+            self.get_logger().warn('Holding current position instead of centering')
+            self.get_logger().warn(f'Position: X={self.current_pose.pose.position.x:.2f}m, '
+                                 f'Y={self.current_pose.pose.position.y:.2f}m, '
+                                 f'Z={current_altitude:.2f}m')
+            self.get_logger().warn('=' * 60)
 
             target = PoseStamped()
             target.header.stamp = self.get_clock().now().to_msg()
             target.header.frame_id = 'map'
             target.pose.position.x = self.current_pose.pose.position.x
             target.pose.position.y = self.current_pose.pose.position.y
-            target.pose.position.z = self.current_pose.pose.position.z
+            target.pose.position.z = current_altitude
             target.pose.orientation = self.current_pose.pose.orientation
 
             self.target_pose = target
-        else:
-            self.get_logger().warn('Cannot start position hold - no position estimate available')
-            self.get_logger().warn('Make sure ArUco markers are visible to the camera')
 
     def state_callback(self, msg: State):
         """Callback for MAVROS state"""
@@ -147,6 +212,10 @@ class FlightControllerNode(Node):
     def local_position_callback(self, msg: PoseStamped):
         """Callback for drone local position"""
         self.current_pose = msg
+
+    def aruco_callback(self, msg: PoseArray):
+        """Callback for ArUco marker detections"""
+        self.latest_aruco_detection = msg
     
     def command_callback(self, msg: String):
         """Callback for high-level commands"""

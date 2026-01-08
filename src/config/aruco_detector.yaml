@@ -5,13 +5,20 @@ aruco_detector_node:
     # Camera topics
     camera_topic: '/camera/image_raw'
     camera_info_topic: '/camera/camera_info'
-    
+
     # ArUco marker parameters
-    marker_size: 0.15  # Size of ArUco markers in meters
+    marker_size: 0.15  # Size of ArUco markers in meters (measure outer black border)
     aruco_dict_type: 'DICT_4X4_50'  # ArUco dictionary type
-    
+
+    # Distance calibration correction
+    # If ArUco reports wrong distance, adjust this factor
+    # Formula: corrected_distance = measured_distance * distance_scale_factor
+    # Example: If ArUco reports 1.33m when real is 0.5m, use 0.5/1.33 = 0.376
+    distance_scale_factor: 0.632  # Default: no correction (1.0 = no scaling)
+
     # Visualization
     visualize: true
-    
+
     # Publishing rate
     publish_rate: 30.0
+  

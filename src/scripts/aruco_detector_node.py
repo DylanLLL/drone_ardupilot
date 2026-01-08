@@ -31,13 +31,15 @@ class ArucoDetectorNode(Node):
         self.declare_parameter('aruco_dict_type', 'DICT_4X4_50')
         self.declare_parameter('visualize', True)
         self.declare_parameter('publish_rate', 30.0)
-        
+        self.declare_parameter('distance_scale_factor', 1.0)  # Distance correction factor
+
         # Get parameters
         camera_topic = self.get_parameter('camera_topic').value
         camera_info_topic = self.get_parameter('camera_info_topic').value
         self.marker_size = self.get_parameter('marker_size').value
         aruco_dict_name = self.get_parameter('aruco_dict_type').value
         self.visualize = self.get_parameter('visualize').value
+        self.distance_scale_factor = self.get_parameter('distance_scale_factor').value
         
         # Initialize CV Bridge
         self.bridge = CvBridge()
@@ -116,7 +118,21 @@ class ArucoDetectorNode(Node):
             self.camera_matrix = np.array(msg.k).reshape(3, 3)
             self.dist_coeffs = np.array(msg.d)
             self.camera_info_received = True
-            self.get_logger().info('Camera calibration info received')
+
+            # Log detailed calibration info
+            fx = self.camera_matrix[0, 0]
+            fy = self.camera_matrix[1, 1]
+            cx = self.camera_matrix[0, 2]
+            cy = self.camera_matrix[1, 2]
+
+            self.get_logger().info('=' * 60)
+            self.get_logger().info('Camera Calibration Info Received')
+            self.get_logger().info('=' * 60)
+            self.get_logger().info(f'Image size: {msg.width} x {msg.height}')
+            self.get_logger().info(f'Focal length: fx={fx:.2f}, fy={fy:.2f} pixels')
+            self.get_logger().info(f'Principal point: cx={cx:.2f}, cy={cy:.2f}')
+            self.get_logger().info(f'Marker size configured: {self.marker_size}m ({self.marker_size*100}cm)')
+            self.get_logger().info('=' * 60)
     
     def image_callback(self, msg: Image):
         """Callback for processing camera images"""
@@ -157,31 +173,44 @@ class ArucoDetectorNode(Node):
                     marker_id = ids[i][0]
                     rvec = rvecs[i][0]
                     tvec = tvecs[i][0]
-                    
+
+                    # Apply distance scale correction factor
+                    tvec_corrected = tvec * self.distance_scale_factor
+
                     # Convert rotation vector to quaternion
                     rotation_matrix, _ = cv2.Rodrigues(rvec)
                     quaternion = self._rotation_matrix_to_quaternion(rotation_matrix)
-                    
+
                     # Create PoseStamped for this marker
                     pose = PoseStamped()
                     pose.header = pose_array.header
-                    pose.pose.position.x = float(tvec[0])
-                    pose.pose.position.y = float(tvec[1])
-                    pose.pose.position.z = float(tvec[2])
+                    pose.pose.position.x = float(tvec_corrected[0])
+                    pose.pose.position.y = float(tvec_corrected[1])
+                    pose.pose.position.z = float(tvec_corrected[2])
                     pose.pose.orientation.x = quaternion[0]
                     pose.pose.orientation.y = quaternion[1]
                     pose.pose.orientation.z = quaternion[2]
                     pose.pose.orientation.w = quaternion[3]
-                    
+
                     pose_array.poses.append(pose.pose)
                     self.latest_detections.append((marker_id, pose))
-                    
-                    # Log detection
-                    distance = np.linalg.norm(tvec)
-                    self.get_logger().info(
-                        f'Detected marker ID {marker_id} at distance {distance:.2f}m',
-                        throttle_duration_sec=1.0
-                    )
+
+                    # Log detection with both raw and corrected distances
+                    distance_raw = np.linalg.norm(tvec)
+                    distance_corrected = np.linalg.norm(tvec_corrected)
+
+                    if abs(self.distance_scale_factor - 1.0) > 0.01:
+                        # Correction factor is active
+                        self.get_logger().info(
+                            f'Marker ID {marker_id}: RAW={distance_raw:.3f}m -> CORRECTED={distance_corrected:.3f}m (scale={self.distance_scale_factor:.3f})',
+                            throttle_duration_sec=1.0
+                        )
+                    else:
+                        # No correction
+                        self.get_logger().info(
+                            f'Detected marker ID {marker_id} at distance {distance_raw:.3f}m',
+                            throttle_duration_sec=1.0
+                        )
                 
                 # Publish pose array
                 self.pose_array_pub.publish(pose_array)
