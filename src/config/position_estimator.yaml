@@ -3,7 +3,7 @@
 position_estimator_node:
   ros__parameters:
     # Marker map file (contains ArUco ID -> world position mapping)
-    marker_map_file: ''  # Leave empty to use camera-relative positioning
+    marker_map_file: 'src/maps/marker_map_single.yaml'  # Single marker at origin
     
     # Vision positioning
     use_vision_position: true  # Publish to MAVROS vision_pose topic
