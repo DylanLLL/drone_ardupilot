@@ -31,11 +31,13 @@ class PositionEstimatorNode(Node):
         self.declare_parameter('use_vision_position', True)
         self.declare_parameter('publish_rate', 30.0)
         self.declare_parameter('min_marker_confidence', 0.7)
+        self.declare_parameter('position_filter_alpha', 0.3)  # 0.1=heavy smoothing, 0.5=light smoothing
 
         # Get parameters
         marker_map_file = self.get_parameter('marker_map_file').value
         self.use_vision_position = self.get_parameter('use_vision_position').value
         publish_rate = self.get_parameter('publish_rate').value
+        self.filter_alpha = self.get_parameter('position_filter_alpha').value
         
         # Load marker map (ArUco ID -> world position)
         self.marker_map: Dict[int, np.ndarray] = {}
@@ -45,6 +47,10 @@ class PositionEstimatorNode(Node):
         # Current drone pose estimate
         self.current_pose: Optional[PoseStamped] = None
         self.pose_covariance = np.eye(6) * 0.1
+
+        # Position filtering (exponential moving average for smoothing)
+        self.filtered_position: Optional[np.ndarray] = None
+        # filter_alpha loaded from parameter above
 
         # Vision state
         self.vision_locked = False
@@ -103,6 +109,7 @@ class PositionEstimatorNode(Node):
             self.get_logger().info(f'Loaded {len(self.marker_map)} markers from map')
         else:
             self.get_logger().warn('No marker map loaded - using camera-relative positioning')
+        self.get_logger().info(f'Position filter alpha: {self.filter_alpha:.2f} (lower=smoother, higher=more responsive)')
     
     def _load_marker_map(self, filepath: str):
         """Load ArUco marker positions from YAML file"""
@@ -152,10 +159,24 @@ class PositionEstimatorNode(Node):
 
             if marker_id in self.marker_map:
                 # Transform from camera to world frame using known marker position
-                drone_position, drone_orientation = self._estimate_drone_position_from_marker(
+                drone_position_raw, drone_orientation = self._estimate_drone_position_from_marker(
                     marker_pose_camera,
                     self.marker_map[marker_id]
                 )
+
+                # Apply exponential moving average filter to smooth position
+                if self.filtered_position is None:
+                    # First reading - initialize filter
+                    self.filtered_position = drone_position_raw
+                else:
+                    # Apply exponential smoothing: filtered = alpha * new + (1-alpha) * old
+                    self.filtered_position = (
+                        self.filter_alpha * drone_position_raw +
+                        (1 - self.filter_alpha) * self.filtered_position
+                    )
+
+                # Use filtered position for pose estimate
+                drone_position = self.filtered_position
 
                 # Create pose estimate
                 pose = PoseStamped()
@@ -177,10 +198,11 @@ class PositionEstimatorNode(Node):
                 if not self.vision_locked:
                     self.vision_locked = True
                     self.get_logger().info('🔒 VISION LOCKED! Real position feedback active')
-                
+
+                # Log both raw and filtered positions for comparison
                 self.get_logger().info(
-                    f'Estimated position: [{drone_position[0]:.2f}, '
-                    f'{drone_position[1]:.2f}, {drone_position[2]:.2f}]',
+                    f'Position - RAW: [{drone_position_raw[0]:+.3f}, {drone_position_raw[1]:+.3f}, {drone_position_raw[2]:+.3f}] | '
+                    f'FILTERED: [{drone_position[0]:+.3f}, {drone_position[1]:+.3f}, {drone_position[2]:+.3f}]',
                     throttle_duration_sec=1.0
                 )
             else:
