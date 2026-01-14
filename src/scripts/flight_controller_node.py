@@ -45,6 +45,7 @@ class FlightControllerNode(Node):
         self.mavros_connected_logged = False
         self.last_mode = ""  # Track mode changes for logging
         self.latest_aruco_detection: Optional[PoseArray] = None  # Latest ArUco detections
+        self.position_locked = False  # Track if we've locked position in GUIDED mode
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -140,10 +141,13 @@ class FlightControllerNode(Node):
             self.get_logger().warn('=' * 60)
             return
 
-        # Get current position to lock (this position is relative to the ArUco marker)
-        current_x = self.current_pose.pose.position.x
-        current_y = self.current_pose.pose.position.y
-        current_z = self.current_pose.pose.position.z
+        # CRITICAL: Take a SNAPSHOT of the world position at this moment
+        # This creates a fixed target in the world frame that won't change
+        # even if the camera's view of the marker changes slightly
+        locked_x = self.current_pose.pose.position.x
+        locked_y = self.current_pose.pose.position.y
+        locked_z = self.current_pose.pose.position.z
+        locked_orientation = self.current_pose.pose.orientation
 
         # Get marker info for logging
         marker_camera = self.latest_aruco_detection.poses[0]
@@ -151,32 +155,45 @@ class FlightControllerNode(Node):
         cam_y = marker_camera.position.y
         cam_z = marker_camera.position.z
 
-        # Lock current position (position is already calculated relative to ArUco marker by position estimator)
-        self.get_logger().info('=' * 60)
-        self.get_logger().info('GUIDED Mode: Position locked with ArUco marker reference')
-        self.get_logger().info(f'Marker detected at camera offset: X={cam_x:.3f}m, Y={cam_y:.3f}m, Z={cam_z:.3f}m')
-        self.get_logger().info(f'Locked world position: [{current_x:.3f}, {current_y:.3f}, {current_z:.3f}]')
-        self.get_logger().info('=' * 60)
-
+        # Create a FIXED target pose in world frame
+        # This target will NOT update even as current_pose updates from new camera readings
         target = PoseStamped()
         target.header.stamp = self.get_clock().now().to_msg()
-        target.header.frame_id = 'map'
-        target.pose.position.x = current_x
-        target.pose.position.y = current_y
-        target.pose.position.z = current_z
-        target.pose.orientation = self.current_pose.pose.orientation
+        target.header.frame_id = 'map'  # World frame
+        target.pose.position.x = locked_x
+        target.pose.position.y = locked_y
+        target.pose.position.z = locked_z
+        target.pose.orientation = locked_orientation
 
         self.target_pose = target
+        self.position_locked = True  # Mark that position is now locked
+
+        # Log the locked position
+        self.get_logger().info('=' * 60)
+        self.get_logger().info('GUIDED Mode: Position LOCKED in world frame')
+        self.get_logger().info(f'Marker detected at camera offset: X={cam_x:.3f}m, Y={cam_y:.3f}m, Z={cam_z:.3f}m')
+        self.get_logger().info(f'LOCKED world position: [{locked_x:.3f}, {locked_y:.3f}, {locked_z:.3f}]')
+        self.get_logger().info(f'Frame: {target.header.frame_id}')
+        self.get_logger().info('This position will remain fixed regardless of camera movement')
+        self.get_logger().info('=' * 60)
 
     def state_callback(self, msg: State):
         """Callback for MAVROS state"""
-        # Detect mode change to GUIDED
+        # Detect mode changes
         if self.mavros_state is not None:
             previous_mode = self.mavros_state.mode
+
+            # Switching TO GUIDED mode
             if previous_mode != 'GUIDED' and msg.mode == 'GUIDED':
                 # Just switched to GUIDED mode - start position hold
-                self.get_logger().info('Switched to GUIDED mode - enabling position hold')
+                self.get_logger().info('Switched to GUIDED mode - attempting position lock')
                 self._start_position_hold()
+
+            # Switching FROM GUIDED mode to something else
+            elif previous_mode == 'GUIDED' and msg.mode != 'GUIDED':
+                # Left GUIDED mode - reset lock
+                self.position_locked = False
+                self.get_logger().info(f'Left GUIDED mode (now in {msg.mode}) - position lock released')
 
         self.mavros_state = msg
     
@@ -238,9 +255,16 @@ class FlightControllerNode(Node):
                     self.setpoint_position_pub.publish(self.target_pose)
 
                 # Log position error for diagnostics every 2 seconds
+                # Also show current vs target for debugging drift
                 self.get_logger().info(
-                    f'Position Error: X={error_x:+.3f}m Y={error_y:+.3f}m Z={error_z:+.3f}m | '
-                    f'Distance={distance:.3f}m',
+                    f'Current: [{self.current_pose.pose.position.x:+.3f}, '
+                    f'{self.current_pose.pose.position.y:+.3f}, '
+                    f'{self.current_pose.pose.position.z:+.3f}] | '
+                    f'Target: [{self.target_pose.pose.position.x:+.3f}, '
+                    f'{self.target_pose.pose.position.y:+.3f}, '
+                    f'{self.target_pose.pose.position.z:+.3f}] | '
+                    f'Error: X={error_x:+.3f} Y={error_y:+.3f} Z={error_z:+.3f} | '
+                    f'Dist={distance:.3f}m',
                     throttle_duration_sec=2.0
                 )
 
