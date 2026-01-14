@@ -144,11 +144,12 @@ class PositionEstimatorNode(Node):
         try:
             # For now, use the first detected marker
             marker_pose_camera = msg.poses[0]
-            
+
             # TODO: Get marker ID from custom message
-            # For now, assume marker ID 0
-            marker_id = 0
-            
+            # For now, try all markers in the map (works for single marker setup)
+            # Assume the detected marker is one of our known markers
+            marker_id = list(self.marker_map.keys())[0] if self.marker_map else 0
+
             if marker_id in self.marker_map:
                 # Transform from camera to world frame using known marker position
                 drone_position, drone_orientation = self._estimate_drone_position_from_marker(

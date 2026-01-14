@@ -2,7 +2,7 @@
 # Simple map for testing with one ArUco marker at origin
 
 markers:
-  - id: 0
+  - id: 1
     position:
       x: 0.0  # Origin X (meters)
       y: 0.0  # Origin Y (meters)
@@ -10,7 +10,7 @@ markers:
     description: "Origin marker - place at reference point"
 
 # Usage:
-# 1. Place ArUco marker ID 0 on ground at your reference point
+# 1. Place ArUco marker ID 1 on ground at your reference point
 # 2. Marker defines the origin (0, 0, 0) of your world coordinate frame
 # 3. Marker's red axis should point in your "forward" direction (X+)
 # 4. Drone will report position relative to this marker
