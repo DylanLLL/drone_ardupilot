@@ -119,83 +119,54 @@ class FlightControllerNode(Node):
 
     def _start_position_hold(self):
         """
-        Start centering over ArUco marker when entering GUIDED mode.
-        If ArUco marker detected: move to center of marker (X, Y) while maintaining current altitude (Z)
-        If no marker detected: hold current position
+        Lock position in place when entering GUIDED mode.
+        Requires ArUco marker to be detected to have valid position estimate.
+        The locked position is relative to the ArUco marker that was just seen.
         """
+        # Check if we have valid position estimate (requires ArUco detection)
         if self.current_pose is None:
-            self.get_logger().warn('Cannot start position hold - no position estimate available')
-            self.get_logger().warn('Make sure ArUco markers are visible to the camera')
+            self.get_logger().warn('=' * 60)
+            self.get_logger().warn('Cannot lock position - no position estimate available')
+            self.get_logger().warn('ArUco marker must be visible to camera for position lock')
+            self.get_logger().warn('Point camera at ArUco marker and try switching to GUIDED again')
+            self.get_logger().warn('=' * 60)
             return
 
-        # Get current altitude to maintain
-        current_altitude = self.current_pose.pose.position.z
-
-        # Check if ArUco marker is detected
-        if self.latest_aruco_detection is not None and len(self.latest_aruco_detection.poses) > 0:
-            # ArUco marker detected - calculate target position to center over marker
-            # The marker detection is in camera frame
-            # We need to find where the marker is in world frame
-
-            # Get marker offset in camera frame (first detected marker)
-            marker_camera = self.latest_aruco_detection.poses[0]
-            cam_x = marker_camera.position.x
-            cam_y = marker_camera.position.y
-            cam_z = marker_camera.position.z  # Distance to marker
-
-            # Transform camera offsets to world frame offsets
-            # For downward-facing camera:
-            # - Camera X (right) -> World Y (right)
-            # - Camera Y (down in image) -> World X (forward when camera pitched down)
-            # The marker is offset from drone center, so we need to move TO the marker
-            offset_x_world = cam_y      # Camera Y -> World X
-            offset_y_world = -cam_x     # Camera X -> -World Y (sign corrected)
-
-            # Calculate target position: current position + offset to marker
-            # This moves the drone so marker is centered under camera
-            target_x = self.current_pose.pose.position.x + offset_x_world
-            target_y = self.current_pose.pose.position.y + offset_y_world
-            target_z = current_altitude  # Maintain current altitude
-
-            self.get_logger().info('=' * 60)
-            self.get_logger().info('GUIDED Mode: Centering over ArUco marker')
-            self.get_logger().info(f'Current position: [{self.current_pose.pose.position.x:.3f}, '
-                                 f'{self.current_pose.pose.position.y:.3f}, '
-                                 f'{current_altitude:.3f}]')
-            self.get_logger().info(f'Marker offset in camera: X={cam_x:.3f}m, Y={cam_y:.3f}m, Z={cam_z:.3f}m')
-            self.get_logger().info(f'World offset to marker: dX={offset_x_world:.3f}m, dY={offset_y_world:.3f}m')
-            self.get_logger().info(f'Target position (marker center): [{target_x:.3f}, {target_y:.3f}, {target_z:.3f}]')
-            self.get_logger().info('=' * 60)
-
-            target = PoseStamped()
-            target.header.stamp = self.get_clock().now().to_msg()
-            target.header.frame_id = 'map'
-            target.pose.position.x = target_x
-            target.pose.position.y = target_y
-            target.pose.position.z = target_z
-            target.pose.orientation = self.current_pose.pose.orientation
-
-            self.target_pose = target
-
-        else:
-            # No ArUco marker detected - fall back to holding current position
+        # Check if ArUco marker is currently detected
+        if self.latest_aruco_detection is None or len(self.latest_aruco_detection.poses) == 0:
             self.get_logger().warn('=' * 60)
-            self.get_logger().warn('GUIDED Mode: No ArUco marker detected')
-            self.get_logger().warn('Holding current position instead of centering')
-            self.get_logger().warn(f'Position: X={self.current_pose.pose.position.x:.2f}m, '
-                                 f'Y={self.current_pose.pose.position.y:.2f}m, '
-                                 f'Z={current_altitude:.2f}m')
+            self.get_logger().warn('Cannot lock position - no ArUco marker currently detected')
+            self.get_logger().warn('Point camera at ArUco marker and try switching to GUIDED again')
             self.get_logger().warn('=' * 60)
+            return
 
-            target = PoseStamped()
-            target.header.stamp = self.get_clock().now().to_msg()
-            target.header.frame_id = 'map'
-            target.pose.position.x = self.current_pose.pose.position.x
-            target.pose.position.y = self.current_pose.pose.position.y
-            target.pose.position.z = current_altitude
-            target.pose.orientation = self.current_pose.pose.orientation
+        # Get current position to lock (this position is relative to the ArUco marker)
+        current_x = self.current_pose.pose.position.x
+        current_y = self.current_pose.pose.position.y
+        current_z = self.current_pose.pose.position.z
 
-            self.target_pose = target
+        # Get marker info for logging
+        marker_camera = self.latest_aruco_detection.poses[0]
+        cam_x = marker_camera.position.x
+        cam_y = marker_camera.position.y
+        cam_z = marker_camera.position.z
+
+        # Lock current position (position is already calculated relative to ArUco marker by position estimator)
+        self.get_logger().info('=' * 60)
+        self.get_logger().info('GUIDED Mode: Position locked with ArUco marker reference')
+        self.get_logger().info(f'Marker detected at camera offset: X={cam_x:.3f}m, Y={cam_y:.3f}m, Z={cam_z:.3f}m')
+        self.get_logger().info(f'Locked world position: [{current_x:.3f}, {current_y:.3f}, {current_z:.3f}]')
+        self.get_logger().info('=' * 60)
+
+        target = PoseStamped()
+        target.header.stamp = self.get_clock().now().to_msg()
+        target.header.frame_id = 'map'
+        target.pose.position.x = current_x
+        target.pose.position.y = current_y
+        target.pose.position.z = current_z
+        target.pose.orientation = self.current_pose.pose.orientation
+
+        self.target_pose = target
 
     def state_callback(self, msg: State):
         """Callback for MAVROS state"""
