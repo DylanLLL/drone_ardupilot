@@ -27,7 +27,7 @@ class PositionEstimatorNode(Node):
         super().__init__('position_estimator_node')
         
         # Declare parameters
-        self.declare_parameter('marker_map_file', '')
+        self.declare_parameter('marker_map_file', 'src/maps/marker_map_single.yaml')
         self.declare_parameter('use_vision_position', True)
         self.declare_parameter('publish_rate', 30.0)
         self.declare_parameter('min_marker_confidence', 0.7)
