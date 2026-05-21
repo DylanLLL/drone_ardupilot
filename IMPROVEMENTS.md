@@ -275,3 +275,79 @@ source install/setup.bash
 2. **Distance scale factor hardcoded** — `aruco_detector_node.py` has `self.distance_scale_factor = 0.632` hardcoded on line 42, ignoring the YAML parameter. This shrinks all position measurements (XYZ) by 36.8%. Verify this value is correct for your specific camera and lens, or set it to `1.0` if camera calibration is done properly.
 
 3. **Marker orientation assumption** — The yaw extraction assumes the ArUco marker's X-axis is aligned with the world X-axis (i.e., the marker is placed in a specific orientation). If the marker is placed rotated (e.g., 45°), there will be a constant yaw offset in the position estimate. The fix is to always place markers consistently, or add a `marker_yaw_deg` field to the marker map YAML.
+
+---
+
+## Update — 2026-05-21 (Opus 4.7 pre-flight review)
+
+A second review before the first field test added two safety features and surfaced one
+critical configuration requirement.
+
+### A. Vision-loss failsafe → LAND
+
+**File:** `flight_controller_node.py` (`control_loop`, `aruco_callback`, `state_callback`)
+
+Previously, when the marker left the camera FOV, `position_estimator_node` kept
+re-publishing the *last* pose. The PID then held against a frozen setpoint while the
+drone physically drifted away blind — the controller literally could not see the error.
+
+Now the flight controller tracks the timestamp of the last ArUco detection. While armed
+and in GUIDED, if no detection arrives for `vision_loss_timeout` seconds (default 2.0),
+it commands **LAND**. The trigger is one-shot and re-arms on the next fresh detection.
+
+```yaml
+vision_loss_timeout: 2.0   # seconds; lower = lands sooner
+```
+
+### B. GPS-denied arming (no GPS module)
+
+**File:** `flight_controller_node.py` (`_check_mavros_connection`, `_publish_ekf_origin`)
+
+The Pixhawk refuses to arm in position-controlled modes without a position source. With
+no GPS module, the EKF needs its **origin set explicitly** — this is the piece that is
+easy to miss. On MAVROS connection, the node now publishes a fixed origin to
+`/mavros/global_position/set_gp_origin` a few times (the absolute lat/lon is arbitrary
+for local vision navigation).
+
+```yaml
+set_ekf_origin: true
+ekf_origin_lat: 0.0
+ekf_origin_lon: 0.0
+ekf_origin_alt: 0.0
+```
+
+> Setting the origin from code is **necessary but not sufficient.** It only works
+> together with the ArduPilot parameters below. Do **not** brute-force `ARMING_CHECK=0`
+> — arming in GUIDED still needs a healthy EKF position, which only the vision source
+> provides.
+
+#### Required ArduPilot params for GPS-denied vision flight (Mission Planner)
+
+| Parameter | Value | Reason |
+|---|---|---|
+| `GPS_TYPE` | `0` | No GPS hardware — stop the FCU looking for it |
+| `AHRS_EKF_TYPE` | `3` | Use EKF3 |
+| `EK3_ENABLE` | `1` | Enable EKF3 |
+| `EK3_SRC1_POSXY` | `6` | Horizontal position source = ExternalNav (vision) |
+| `EK3_SRC1_VELXY` | `6` | Horizontal velocity source = ExternalNav |
+| `EK3_SRC1_POSZ` | `1` | Altitude source = Baro (`6` for vision Z if preferred) |
+| `EK3_SRC1_YAW` | `6` | **Heading from ExternalNav** — see critical note below |
+| `VISO_TYPE` | `1` | Accept MAVLink vision position |
+| `ARMING_CHECK` | keep enabled | Relax only the GPS bit if needed — never set to 0 |
+
+### C. CRITICAL — heading frame must match the position frame
+
+This is the most likely remaining cause of residual drift. The vision position X/Y axes
+are the **marker's printed axes**. If ArduPilot takes yaw from the **compass** (north)
+while position comes from the marker frame, the two disagree by the marker's yaw offset
+and the drone drifts/circles. Resolve it **one** of two ways:
+
+1. Physically align the marker's X-axis with the drone's takeoff/forward heading, **or**
+2. Set `EK3_SRC1_YAW = 6` (ExternalNav) so heading and position share the marker frame.
+
+### Pre-flight bench check (no props) for the two new features
+
+- Power on, connect MAVROS → confirm `Published EKF origin ...` appears in the log and
+  the Pixhawk pre-arm GPS complaint clears (arming becomes possible).
+- Arm, switch to GUIDED with the marker visible, then cover the camera → confirm the
+  node logs `VISION LOST ... commanding LAND` after ~2 s and the mode flips to LAND.

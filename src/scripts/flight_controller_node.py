@@ -7,6 +7,7 @@ Handles high-level flight commands and interfaces with ArduPilot via MAVROS
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, PoseArray
+from geographic_msgs.msg import GeoPointStamped
 from mavros_msgs.msg import State, OverrideRCIn, PositionTarget
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from std_msgs.msg import String
@@ -38,6 +39,17 @@ class FlightControllerNode(Node):
         self.declare_parameter('pid_max_vel', 0.5)           # m/s: velocity cap per axis
         self.declare_parameter('pid_integral_max', 0.5)      # m·s: anti-windup clamp
 
+        # Vision-loss failsafe: command LAND if the marker stays lost this long while holding
+        self.declare_parameter('vision_loss_timeout', 2.0)   # seconds
+
+        # GPS-denied arming: set the EKF origin so position-controlled modes can arm
+        # without a GPS module. Required when GPS_TYPE=0 and the EKF position source is
+        # ExternalNav (vision). The absolute lat/lon is arbitrary for local vision nav.
+        self.declare_parameter('set_ekf_origin', True)
+        self.declare_parameter('ekf_origin_lat', 0.0)
+        self.declare_parameter('ekf_origin_lon', 0.0)
+        self.declare_parameter('ekf_origin_alt', 0.0)
+
         # Get parameters
         self.default_altitude = self.get_parameter('default_altitude').value
         self.takeoff_altitude = self.get_parameter('takeoff_altitude').value
@@ -51,6 +63,11 @@ class FlightControllerNode(Node):
         self.pid_kd = self.get_parameter('pid_kd').value
         self.pid_max_vel = self.get_parameter('pid_max_vel').value
         self.pid_integral_max = self.get_parameter('pid_integral_max').value
+        self.vision_loss_timeout = self.get_parameter('vision_loss_timeout').value
+        self.set_ekf_origin = self.get_parameter('set_ekf_origin').value
+        self.ekf_origin_lat = self.get_parameter('ekf_origin_lat').value
+        self.ekf_origin_lon = self.get_parameter('ekf_origin_lon').value
+        self.ekf_origin_alt = self.get_parameter('ekf_origin_alt').value
 
         # State variables
         self.mavros_state: Optional[State] = None
@@ -60,6 +77,9 @@ class FlightControllerNode(Node):
         self.last_mode = ""  # Track mode changes for logging
         self.latest_aruco_detection: Optional[PoseArray] = None  # Latest ArUco detections
         self.position_locked = False  # Track if we've locked position in GUIDED mode
+        self.last_aruco_time = None          # timestamp of most recent ArUco detection
+        self.vision_loss_landing = False     # one-shot guard so LAND is commanded only once
+        self.ekf_origin_sent_count = 0       # how many times the EKF origin has been pushed
 
         # PID controller state (XY only; Z/altitude is handled by position setpoint)
         self.pid_integral = np.zeros(2)       # accumulated error × time
@@ -125,6 +145,13 @@ class FlightControllerNode(Node):
             10
         )
 
+        # EKF origin publisher — lets the FCU arm in GPS-denied mode (no GPS module)
+        self.set_gp_origin_pub = self.create_publisher(
+            GeoPointStamped,
+            '/mavros/global_position/set_gp_origin',
+            10
+        )
+
         # Service clients
         self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
@@ -148,10 +175,33 @@ class FlightControllerNode(Node):
             if not self.mavros_connected_logged:
                 self.get_logger().info('MAVROS connected!')
                 self.mavros_connected_logged = True
+            # Push the EKF origin a few times once connected so the FCU can arm
+            # without a GPS module. Repeated because the first send may arrive
+            # before the EKF is ready to accept it.
+            if self.set_ekf_origin and self.ekf_origin_sent_count < 3:
+                self._publish_ekf_origin()
+                self.ekf_origin_sent_count += 1
         else:
             if self.mavros_connected_logged:
                 self.get_logger().warn('MAVROS disconnected!')
                 self.mavros_connected_logged = False
+
+    def _publish_ekf_origin(self):
+        """
+        Publish a fixed global origin to MAVROS so the EKF initializes in GPS-denied
+        mode. The absolute lat/lon is arbitrary for local vision navigation — it only
+        needs to exist so position-controlled modes (GUIDED) can pass arming checks.
+        """
+        msg = GeoPointStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.position.latitude = self.ekf_origin_lat
+        msg.position.longitude = self.ekf_origin_lon
+        msg.position.altitude = self.ekf_origin_alt
+        self.set_gp_origin_pub.publish(msg)
+        self.get_logger().info(
+            f'Published EKF origin ({self.ekf_origin_lat}, {self.ekf_origin_lon}, '
+            f'{self.ekf_origin_alt}) for GPS-denied arming'
+        )
 
     def _start_position_hold(self):
         """
@@ -232,6 +282,7 @@ class FlightControllerNode(Node):
             elif previous_mode == 'GUIDED' and msg.mode != 'GUIDED':
                 # Left GUIDED mode - reset lock and PID state
                 self.position_locked = False
+                self.vision_loss_landing = False
                 self.pid_integral = np.zeros(2)
                 self.pid_prev_error = np.zeros(2)
                 self.pid_last_time = None
@@ -246,6 +297,9 @@ class FlightControllerNode(Node):
     def aruco_callback(self, msg: PoseArray):
         """Callback for ArUco marker detections"""
         self.latest_aruco_detection = msg
+        if msg.poses:
+            self.last_aruco_time = self.get_clock().now()
+            self.vision_loss_landing = False  # fresh detection re-arms the failsafe
     
     def command_callback(self, msg: String):
         """Callback for high-level commands"""
@@ -290,6 +344,22 @@ class FlightControllerNode(Node):
 
         is_armed = self.mavros_state is not None and self.mavros_state.armed
         is_guided = self.mavros_state is not None and self.mavros_state.mode == 'GUIDED'
+
+        # Vision-loss failsafe: once the marker is lost the position estimate goes
+        # stale, so the PID would hold against a frozen setpoint while the drone
+        # drifts blind. Command LAND instead. One-shot; re-armed on fresh detection.
+        if (is_armed and is_guided and self.last_aruco_time is not None
+                and not self.vision_loss_landing):
+            vision_age = (self.get_clock().now() - self.last_aruco_time).nanoseconds / 1e9
+            if vision_age > self.vision_loss_timeout:
+                self.vision_loss_landing = True
+                self.get_logger().error('=' * 60)
+                self.get_logger().error(
+                    f'VISION LOST for {vision_age:.1f}s (>{self.vision_loss_timeout}s) - commanding LAND'
+                )
+                self.get_logger().error('=' * 60)
+                self.set_mode('LAND')
+                return
 
         # Reset PID timing when not active so the first active cycle doesn't get a huge dt
         if not (is_armed and is_guided and self.target_pose is not None):
