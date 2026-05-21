@@ -65,6 +65,15 @@ class FlightControllerNode(Node):
         self.pid_integral = np.zeros(2)       # accumulated error × time
         self.pid_prev_error = np.zeros(2)     # previous cycle error for derivative term
         self.pid_last_time = None             # timestamp of previous control cycle
+
+        # PositionTarget type_mask: velocity XY + position Z + fixed yaw.
+        # Computed once — bits are fixed for the lifetime of the node.
+        self._setpoint_type_mask = (
+            PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY |
+            PositionTarget.IGNORE_VZ |
+            PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ |
+            PositionTarget.IGNORE_YAW_RATE
+        )
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -333,33 +342,15 @@ class FlightControllerNode(Node):
         if dist_xy < self.position_deadband:
             vel_cmd = np.zeros(2)
 
-        # --- Publish PositionTarget: velocity XY + position Z + fixed yaw ---
-        # type_mask bits: 1=ignore px, 2=ignore py, 32=ignore vz,
-        #                 64=ignore afx, 128=ignore afy, 256=ignore afz, 2048=ignore yaw_rate
-        # Leaving pz, vx, vy, yaw unmasked so ArduPilot uses them.
-        IGNORE_PX        = 1
-        IGNORE_PY        = 2
-        IGNORE_VZ        = 32
-        IGNORE_AFX       = 64
-        IGNORE_AFY       = 128
-        IGNORE_AFZ       = 256
-        IGNORE_YAW_RATE  = 2048
-
         msg = PositionTarget()
         msg.header.stamp = now.to_msg()
         msg.header.frame_id = 'map'
         msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        msg.type_mask = (
-            IGNORE_PX | IGNORE_PY |
-            IGNORE_VZ |
-            IGNORE_AFX | IGNORE_AFY | IGNORE_AFZ |
-            IGNORE_YAW_RATE
-        )
+        msg.type_mask = self._setpoint_type_mask
         msg.velocity.x = float(vel_cmd[0])
         msg.velocity.y = float(vel_cmd[1])
-        msg.velocity.z = 0.0
-        msg.position.z = float(self.target_pose.pose.position.z)   # altitude hold
-        msg.yaw = 0.0                                               # hold current heading
+        msg.position.z = float(self.target_pose.pose.position.z)
+        msg.yaw = 0.0
 
         self.setpoint_raw_pub.publish(msg)
 

@@ -23,7 +23,16 @@ class PositionEstimatorNode(Node):
     Estimates drone position from ArUco markers and publishes to MAVROS
     Includes bootstrap mode for takeoff without initial vision
     """
-    
+
+    # Fixed rotation: camera frame -> drone body frame.
+    # Camera mounted downward, image-top pointing toward drone nose:
+    #   Camera +X (image right) = Body +Y
+    #   Camera +Y (image down)  = Body -X
+    #   Camera +Z (depth)       = Body +Z
+    _R_BODY_CAM = np.array([[ 0.0, -1.0,  0.0],
+                             [ 1.0,  0.0,  0.0],
+                             [ 0.0,  0.0,  1.0]])
+
     def __init__(self):
         super().__init__('position_estimator_node')
         
@@ -162,13 +171,12 @@ class PositionEstimatorNode(Node):
             marker_id = list(self.marker_map.keys())[0] if self.marker_map else 0
 
             if marker_id in self.marker_map:
-                # Transform from camera to world frame using known marker position
-                drone_position_raw, drone_orientation_raw = self._estimate_drone_position_from_marker(
+                drone_position_raw, raw_yaw = self._estimate_drone_position_from_marker(
                     marker_pose_camera,
                     self.marker_map[marker_id]
                 )
 
-                # Apply EMA filter to XYZ position
+                # EMA filter on XYZ position
                 if self.filtered_position is None:
                     self.filtered_position = drone_position_raw
                 else:
@@ -177,8 +185,7 @@ class PositionEstimatorNode(Node):
                         (1 - self.filter_alpha) * self.filtered_position
                     )
 
-                # Apply circular EMA filter to yaw (avoids wrap-around errors near ±π)
-                raw_yaw = math.atan2(drone_orientation_raw[2], drone_orientation_raw[3]) * 2.0
+                # Circular EMA filter on yaw (avoids wrap-around errors near ±π)
                 new_sin = math.sin(raw_yaw)
                 new_cos = math.cos(raw_yaw)
                 if self.filtered_yaw_sin is None:
@@ -266,20 +273,8 @@ class PositionEstimatorNode(Node):
             cam_z  # altitude = camera distance to ground (not rotated)
         ])
 
-        # Extract drone yaw by chaining camera-world rotation with the fixed camera-body mount.
-        # Camera mount (downward, image-top = drone nose):
-        #   Camera +X (image right) = Body +Y (right)
-        #   Camera +Y (image down)  = Body -X (backward)
-        #   Camera +Z (depth)       = Body +Z (down)
-        R_body_cam = np.array([[ 0.0, -1.0,  0.0],
-                                [ 1.0,  0.0,  0.0],
-                                [ 0.0,  0.0,  1.0]])
-        R_world_cam = R_cam_marker.T
-        R_world_body = R_world_cam @ R_body_cam.T
+        R_world_body = R_cam_marker.T @ self._R_BODY_CAM.T
         yaw = math.atan2(R_world_body[1, 0], R_world_body[0, 0])
-
-        half_yaw = yaw / 2.0
-        drone_orientation = (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
 
         self.get_logger().info(
             f'Cam=({cam_x:.3f}, {cam_y:.3f}, {cam_z:.3f}) | '
@@ -288,7 +283,7 @@ class PositionEstimatorNode(Node):
             throttle_duration_sec=0.5
         )
 
-        return drone_position, drone_orientation
+        return drone_position, yaw
 
     def _quaternion_to_rotation_matrix(self, quat: Tuple[float, float, float, float]) -> np.ndarray:
         """
