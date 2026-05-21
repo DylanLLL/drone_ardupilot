@@ -3,6 +3,7 @@
 Position Estimator Node - Modified for Bootstrap
 """
 
+import math
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, PoseArray, TransformStamped
@@ -31,7 +32,7 @@ class PositionEstimatorNode(Node):
         self.declare_parameter('use_vision_position', True)
         self.declare_parameter('publish_rate', 30.0)
         self.declare_parameter('min_marker_confidence', 0.7)
-        self.declare_parameter('position_filter_alpha', 0.3)  # 0.1=heavy smoothing, 0.5=light smoothing
+        self.declare_parameter('position_filter_alpha', 0.6)  # 0.3=heavy smoothing, 0.7=light smoothing
 
         # Get parameters
         marker_map_file = self.get_parameter('marker_map_file').value
@@ -50,6 +51,9 @@ class PositionEstimatorNode(Node):
 
         # Position filtering (exponential moving average for smoothing)
         self.filtered_position: Optional[np.ndarray] = None
+        # Yaw filter uses separate sin/cos components to handle angle wrapping correctly
+        self.filtered_yaw_sin: Optional[float] = None
+        self.filtered_yaw_cos: Optional[float] = None
         # filter_alpha loaded from parameter above
 
         # Vision state
@@ -159,50 +163,59 @@ class PositionEstimatorNode(Node):
 
             if marker_id in self.marker_map:
                 # Transform from camera to world frame using known marker position
-                drone_position_raw, drone_orientation = self._estimate_drone_position_from_marker(
+                drone_position_raw, drone_orientation_raw = self._estimate_drone_position_from_marker(
                     marker_pose_camera,
                     self.marker_map[marker_id]
                 )
 
-                # Apply exponential moving average filter to smooth position
+                # Apply EMA filter to XYZ position
                 if self.filtered_position is None:
-                    # First reading - initialize filter
                     self.filtered_position = drone_position_raw
                 else:
-                    # Apply exponential smoothing: filtered = alpha * new + (1-alpha) * old
                     self.filtered_position = (
                         self.filter_alpha * drone_position_raw +
                         (1 - self.filter_alpha) * self.filtered_position
                     )
 
-                # Use filtered position for pose estimate
+                # Apply circular EMA filter to yaw (avoids wrap-around errors near ±π)
+                raw_yaw = math.atan2(drone_orientation_raw[2], drone_orientation_raw[3]) * 2.0
+                new_sin = math.sin(raw_yaw)
+                new_cos = math.cos(raw_yaw)
+                if self.filtered_yaw_sin is None:
+                    self.filtered_yaw_sin = new_sin
+                    self.filtered_yaw_cos = new_cos
+                else:
+                    self.filtered_yaw_sin = self.filter_alpha * new_sin + (1 - self.filter_alpha) * self.filtered_yaw_sin
+                    self.filtered_yaw_cos = self.filter_alpha * new_cos + (1 - self.filter_alpha) * self.filtered_yaw_cos
+                filtered_yaw = math.atan2(self.filtered_yaw_sin, self.filtered_yaw_cos)
+                half_yaw = filtered_yaw / 2.0
+                drone_orientation = (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
+
                 drone_position = self.filtered_position
 
                 # Create pose estimate
                 pose = PoseStamped()
                 pose.header.stamp = self.get_clock().now().to_msg()
                 pose.header.frame_id = 'map'
-                pose.pose.position.x = drone_position[0]
-                pose.pose.position.y = drone_position[1]
-                pose.pose.position.z = drone_position[2]
-
-                # Use correctly transformed orientation
+                pose.pose.position.x = float(drone_position[0])
+                pose.pose.position.y = float(drone_position[1])
+                pose.pose.position.z = float(drone_position[2])
                 pose.pose.orientation.x = drone_orientation[0]
                 pose.pose.orientation.y = drone_orientation[1]
                 pose.pose.orientation.z = drone_orientation[2]
                 pose.pose.orientation.w = drone_orientation[3]
 
                 self.current_pose = pose
-                
+
                 # Mark vision as locked
                 if not self.vision_locked:
                     self.vision_locked = True
-                    self.get_logger().info('🔒 VISION LOCKED! Real position feedback active')
+                    self.get_logger().info('VISION LOCKED! Real position feedback active')
 
-                # Log both raw and filtered positions for comparison
                 self.get_logger().info(
                     f'Position - RAW: [{drone_position_raw[0]:+.3f}, {drone_position_raw[1]:+.3f}, {drone_position_raw[2]:+.3f}] | '
-                    f'FILTERED: [{drone_position[0]:+.3f}, {drone_position[1]:+.3f}, {drone_position[2]:+.3f}]',
+                    f'FILTERED: [{drone_position[0]:+.3f}, {drone_position[1]:+.3f}, {drone_position[2]:+.3f}] | '
+                    f'Yaw: {math.degrees(filtered_yaw):+.1f}°',
                     throttle_duration_sec=1.0
                 )
             else:
@@ -214,62 +227,64 @@ class PositionEstimatorNode(Node):
     
     def _estimate_drone_position_from_marker(
         self,
-        marker_pose_camera: PoseStamped,
+        marker_pose_camera,
         marker_position_world: np.ndarray
     ) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
         """
-        Estimate drone position AND orientation in world frame from marker detection.
+        Estimate drone position and yaw in world frame from a detected ArUco marker.
 
-        SIMPLIFIED approach for downward-facing camera detecting ground markers:
-        - Markers are on ground (world Z = 0)
-        - Camera points straight down
-        - Camera Z distance = drone altitude
-        - Camera X,Y offsets map to world X,Y offsets (with rotation correction)
+        Uses the full rotation matrix from ArUco to correctly account for drone yaw.
+        This replaces the original yaw-blind approach that caused lateral drift whenever
+        the drone was not perfectly aligned with the marker's axes.
 
-        Returns:
-            Tuple of (position_array, orientation_quaternion)
-            - position_array: [x, y, z] in world frame
-            - orientation_quaternion: (x, y, z, w) drone orientation in world frame
+        Derivation:
+          - ArUco gives R_cam_marker: transforms marker-frame vectors to camera-frame vectors
+          - Drone world pos = marker_world - R_cam_marker^T @ cam_translation
+          - Yaw is extracted by chaining R_cam_marker^T with the known camera-body mount rotation
+
+        Assumes markers are placed with axes aligned to the world frame (marker X = world X).
+        The camera is mounted facing straight down with image-top pointing toward drone nose.
         """
-
-        # Step 1: Extract marker offset in camera frame
         cam_x = marker_pose_camera.position.x
         cam_y = marker_pose_camera.position.y
-        cam_z = marker_pose_camera.position.z  # Distance to marker (= altitude since marker on ground)
+        cam_z = marker_pose_camera.position.z  # altitude: camera-to-ground distance
 
-        # Step 2: Transform camera offsets to body/world frame
-        # For camera facing DOWN (90° pitch):
-        # - Camera +X (right in image) -> World +Y (right in world)
-        # - Camera +Y (down in image) -> World -X (when camera rotated, image top points forward)
-        # - Camera +Z (distance) -> Altitude above ground
+        # Build rotation matrix from the quaternion output of aruco_detector_node.
+        # R_cam_marker transforms marker-frame vectors into camera-frame vectors.
+        q = marker_pose_camera.orientation
+        R_cam_marker = self._quaternion_to_rotation_matrix((q.x, q.y, q.z, q.w))
 
-        # Marker offset in world frame (relative to drone)
-        # Camera sees marker at offset (cam_x, cam_y) from center
-        # This means DRONE is offset by NEGATIVE of this from marker
-        offset_x_world = -(-cam_y)  # Camera Y maps to -World X, then negate for drone offset = cam_y
-        offset_y_world = -(cam_x)     # Camera X maps to World Y, then negate for drone offset = -cam_x
+        # Drone position formula (derived from camera projection inverse):
+        #   cam_translation = R_cam_marker @ (marker_world - drone_world)
+        #   => drone_world = marker_world - R_cam_marker^T @ cam_translation
+        cam_translation = np.array([cam_x, cam_y, cam_z])
+        world_offset = R_cam_marker.T @ cam_translation
 
-        # Step 3: Calculate drone world position
-        # Marker is at marker_position_world
-        # Drone is offset from marker by (offset_x_world, offset_y_world)
-        # Altitude is cam_z (distance from camera to ground marker)
         drone_position = np.array([
-            marker_position_world[0] + offset_x_world,  # X position
-            marker_position_world[1] + offset_y_world,  # Y position
-            cam_z                                        # Z = altitude (camera distance to ground)
+            marker_position_world[0] - world_offset[0],
+            marker_position_world[1] - world_offset[1],
+            cam_z  # altitude = camera distance to ground (not rotated)
         ])
 
-        # Step 4: Orientation - for now, assume level flight (no roll/pitch)
-        # TODO: Extract yaw from marker orientation if needed
-        drone_orientation = (0.0, 0.0, 0.0, 1.0)  # Identity quaternion (no rotation)
+        # Extract drone yaw by chaining camera-world rotation with the fixed camera-body mount.
+        # Camera mount (downward, image-top = drone nose):
+        #   Camera +X (image right) = Body +Y (right)
+        #   Camera +Y (image down)  = Body -X (backward)
+        #   Camera +Z (depth)       = Body +Z (down)
+        R_body_cam = np.array([[ 0.0, -1.0,  0.0],
+                                [ 1.0,  0.0,  0.0],
+                                [ 0.0,  0.0,  1.0]])
+        R_world_cam = R_cam_marker.T
+        R_world_body = R_world_cam @ R_body_cam.T
+        yaw = math.atan2(R_world_body[1, 0], R_world_body[0, 0])
 
-        # Log for debugging
+        half_yaw = yaw / 2.0
+        drone_orientation = (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
+
         self.get_logger().info(
-            f'Camera: X={cam_x:.3f}m Y={cam_y:.3f}m Z={cam_z:.3f}m | Offset: dX={offset_x_world:.3f}m dY={offset_y_world:.3f}m',
-            throttle_duration_sec=0.5
-        )
-        self.get_logger().info(
-            f'Marker@[{marker_position_world[0]:.2f},{marker_position_world[1]:.2f},0] -> Drone@[{drone_position[0]:.3f},{drone_position[1]:.3f},{drone_position[2]:.3f}]',
+            f'Cam=({cam_x:.3f}, {cam_y:.3f}, {cam_z:.3f}) | '
+            f'Drone=[{drone_position[0]:.3f}, {drone_position[1]:.3f}, {drone_position[2]:.3f}] | '
+            f'Yaw_raw={math.degrees(yaw):.1f}°',
             throttle_duration_sec=0.5
         )
 
@@ -332,40 +347,6 @@ class PositionEstimatorNode(Node):
             z = 0.25 * s
 
         return (x, y, z, w)
-
-    def _get_camera_to_body_transform(self) -> np.ndarray:
-        """
-        Get transformation matrix from camera frame to drone body frame.
-        Camera is mounted facing straight down (90° pitch).
-
-        Camera frame (OpenCV): X=right, Y=down, Z=forward
-        When camera points DOWN and detects markers on GROUND:
-          - Camera +Z (forward/depth) = distance to ground = drone altitude
-          - Camera +X (right) maps to lateral offset
-          - Camera +Y (down when camera faces forward, but we're pitched 90°)
-
-        For downward-facing camera detecting ground markers:
-          - Camera X -> Body Y (camera right = drone right)
-          - Camera Y -> Body -X (camera down in image = drone forward when pitched)
-          - Camera Z -> Altitude (distance down to ground)
-
-        Body/World frame: X=forward (North), Y=right (East), Z=down
-
-        Returns 4x4 homogeneous transformation matrix
-        """
-        # Camera to Body rotation matrix for 90° pitch down
-        # When camera faces down, image top points forward
-        R_body_camera = np.array([
-            [ 0, -1,  0],   # Body X (forward) = -Camera Y (up in image)
-            [ 1,  0,  0],   # Body Y (right) = Camera X (right in image)
-            [ 0,  0,  1]    # Body Z (down) = Camera Z (depth/distance)
-        ])
-
-        # Create 4x4 homogeneous transformation
-        T_body_camera = np.eye(4)
-        T_body_camera[0:3, 0:3] = R_body_camera
-
-        return T_body_camera
 
     def _use_camera_relative_pose(self, marker_pose_camera):
         """Use camera-relative positioning when marker map not available"""

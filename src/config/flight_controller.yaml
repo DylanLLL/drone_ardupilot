@@ -11,7 +11,20 @@ flight_controller_node:
 
     # Position tolerance
     position_tolerance: 0.15  # Position tolerance in meters for waypoint reached
-    position_deadband: 0.05   # Ignore position errors smaller than 5cm to reduce jitter/oscillations
+    position_deadband: 0.05   # Ignore XY errors smaller than 5cm (prevents jitter at rest)
 
     # Control rate
-    control_rate: 10.0  # Control loop rate in Hz (reduced from 20.0 for gentler control)
+    control_rate: 20.0  # Control loop rate in Hz
+
+    # XY Position Hold PID Gains
+    # Tuning procedure:
+    #   1. Start with these conservative values and verify the drone holds position
+    #   2. If drone drifts steadily without correcting: increase pid_kp
+    #   3. If drone oscillates back and forth: decrease pid_kp or increase pid_kd
+    #   4. If drone holds near-target but with a small consistent offset: increase pid_ki
+    #   5. Never increase pid_ki without first getting pid_kp right — windup causes crashes
+    pid_kp: 0.4          # Proportional gain: immediate correction force
+    pid_ki: 0.05         # Integral gain: corrects steady-state drift
+    pid_kd: 0.1          # Derivative gain: damps oscillations
+    pid_max_vel: 0.5     # Maximum velocity command per axis (m/s)
+    pid_integral_max: 0.5  # Anti-windup clamp on integral term (m·s)

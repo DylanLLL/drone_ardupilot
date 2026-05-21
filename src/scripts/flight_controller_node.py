@@ -7,7 +7,7 @@ Handles high-level flight commands and interfaces with ArduPilot via MAVROS
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, PoseArray
-from mavros_msgs.msg import State, OverrideRCIn
+from mavros_msgs.msg import State, OverrideRCIn, PositionTarget
 from mavros_msgs.srv import CommandBool, SetMode, CommandTOL
 from std_msgs.msg import String
 import numpy as np
@@ -30,6 +30,14 @@ class FlightControllerNode(Node):
         self.declare_parameter('position_deadband', 0.05)
         self.declare_parameter('control_rate', 20.0)
 
+        # PID gains for XY position hold (tune these on the actual drone)
+        # Start conservative: low Kp prevents oscillation, small Ki corrects steady-state drift
+        self.declare_parameter('pid_kp', 0.4)    # proportional: immediate response to error
+        self.declare_parameter('pid_ki', 0.05)   # integral: corrects persistent drift
+        self.declare_parameter('pid_kd', 0.1)    # derivative: damps oscillations
+        self.declare_parameter('pid_max_vel', 0.5)           # m/s: velocity cap per axis
+        self.declare_parameter('pid_integral_max', 0.5)      # m·s: anti-windup clamp
+
         # Get parameters
         self.default_altitude = self.get_parameter('default_altitude').value
         self.takeoff_altitude = self.get_parameter('takeoff_altitude').value
@@ -37,6 +45,12 @@ class FlightControllerNode(Node):
         self.position_tolerance = self.get_parameter('position_tolerance').value
         self.position_deadband = self.get_parameter('position_deadband').value
         control_rate = self.get_parameter('control_rate').value
+
+        self.pid_kp = self.get_parameter('pid_kp').value
+        self.pid_ki = self.get_parameter('pid_ki').value
+        self.pid_kd = self.get_parameter('pid_kd').value
+        self.pid_max_vel = self.get_parameter('pid_max_vel').value
+        self.pid_integral_max = self.get_parameter('pid_integral_max').value
 
         # State variables
         self.mavros_state: Optional[State] = None
@@ -46,6 +60,11 @@ class FlightControllerNode(Node):
         self.last_mode = ""  # Track mode changes for logging
         self.latest_aruco_detection: Optional[PoseArray] = None  # Latest ArUco detections
         self.position_locked = False  # Track if we've locked position in GUIDED mode
+
+        # PID controller state (XY only; Z/altitude is handled by position setpoint)
+        self.pid_integral = np.zeros(2)       # accumulated error × time
+        self.pid_prev_error = np.zeros(2)     # previous cycle error for derivative term
+        self.pid_last_time = None             # timestamp of previous control cycle
         
         # Subscribers
         self.state_sub = self.create_subscription(
@@ -80,6 +99,13 @@ class FlightControllerNode(Node):
         self.setpoint_position_pub = self.create_publisher(
             PoseStamped,
             '/mavros/setpoint_position/local',
+            10
+        )
+
+        # Velocity+position setpoint for PID-driven control (XY velocity + Z altitude)
+        self.setpoint_raw_pub = self.create_publisher(
+            PositionTarget,
+            '/mavros/setpoint_raw/local',
             10
         )
 
@@ -166,7 +192,11 @@ class FlightControllerNode(Node):
         target.pose.orientation = locked_orientation
 
         self.target_pose = target
-        self.position_locked = True  # Mark that position is now locked
+        self.position_locked = True
+        # Reset PID so integral from previous target doesn't corrupt the new hold
+        self.pid_integral = np.zeros(2)
+        self.pid_prev_error = np.zeros(2)
+        self.pid_last_time = None
 
         # Log the locked position
         self.get_logger().info('=' * 60)
@@ -191,9 +221,12 @@ class FlightControllerNode(Node):
 
             # Switching FROM GUIDED mode to something else
             elif previous_mode == 'GUIDED' and msg.mode != 'GUIDED':
-                # Left GUIDED mode - reset lock
+                # Left GUIDED mode - reset lock and PID state
                 self.position_locked = False
-                self.get_logger().info(f'Left GUIDED mode (now in {msg.mode}) - position lock released')
+                self.pid_integral = np.zeros(2)
+                self.pid_prev_error = np.zeros(2)
+                self.pid_last_time = None
+                self.get_logger().info(f'Left GUIDED mode (now in {msg.mode}) - position lock and PID reset')
 
         self.mavros_state = msg
     
@@ -231,51 +264,120 @@ class FlightControllerNode(Node):
             self.get_logger().warn(f'Unknown command: {command}')
     
     def control_loop(self):
-        """Main control loop - publishes setpoints when armed AND in GUIDED mode"""
+        """
+        Main control loop: XY velocity PID + Z altitude position setpoint.
 
-        # Manage RC override based on flight mode
+        Instead of publishing a raw position target (which relies on ArduPilot's
+        GPS-tuned position P loop), we compute velocity commands with our own PID
+        tuned for the vision-based position estimates. Z altitude is still handled
+        as a position setpoint since the barometer/ALT_HOLD is more reliable there.
+
+        Tuning guide (conservative starting values):
+          pid_kp: increase if drone responds too slowly, decrease if oscillating
+          pid_ki: increase if drone settles with a steady-state offset (drift)
+          pid_kd: increase if drone overshoots and oscillates after disturbance
+        """
         self._manage_rc_override()
 
-        # Check if drone is armed, in GUIDED mode, and we have a target
         is_armed = self.mavros_state is not None and self.mavros_state.armed
         is_guided = self.mavros_state is not None and self.mavros_state.mode == 'GUIDED'
 
-        if self.target_pose is not None and is_armed and is_guided:
-            # Check if target reached and show position error
-            if self.current_pose is not None:
-                # Calculate position error (target - current)
-                error_x = self.target_pose.pose.position.x - self.current_pose.pose.position.x
-                error_y = self.target_pose.pose.position.y - self.current_pose.pose.position.y
-                error_z = self.target_pose.pose.position.z - self.current_pose.pose.position.z
+        # Reset PID timing when not active so the first active cycle doesn't get a huge dt
+        if not (is_armed and is_guided and self.target_pose is not None):
+            self.pid_last_time = None
+            return
 
-                distance = self._calculate_distance(self.current_pose, self.target_pose)
+        if self.current_pose is None:
+            # No position estimate yet; hold last setpoint via a pure position command
+            self.setpoint_position_pub.publish(self.target_pose)
+            return
 
-                # Only publish setpoint if error exceeds deadband (reduces oscillations)
-                if distance > self.position_deadband:
-                    self.setpoint_position_pub.publish(self.target_pose)
+        now = self.get_clock().now()
+        if self.pid_last_time is None:
+            self.pid_last_time = now
+            return
 
-                # Log position error for diagnostics every 2 seconds
-                # Also show current vs target for debugging drift
-                self.get_logger().info(
-                    f'Current: [{self.current_pose.pose.position.x:+.3f}, '
-                    f'{self.current_pose.pose.position.y:+.3f}, '
-                    f'{self.current_pose.pose.position.z:+.3f}] | '
-                    f'Target: [{self.target_pose.pose.position.x:+.3f}, '
-                    f'{self.target_pose.pose.position.y:+.3f}, '
-                    f'{self.target_pose.pose.position.z:+.3f}] | '
-                    f'Error: X={error_x:+.3f} Y={error_y:+.3f} Z={error_z:+.3f} | '
-                    f'Dist={distance:.3f}m',
-                    throttle_duration_sec=2.0
-                )
+        dt = (now - self.pid_last_time).nanoseconds / 1e9
+        self.pid_last_time = now
 
-                if distance < self.position_tolerance:
-                    self.get_logger().info(
-                        f'Target reached (distance: {distance:.3f}m)',
-                        throttle_duration_sec=2.0
-                    )
-            else:
-                # No current position available, still publish setpoint
-                self.setpoint_position_pub.publish(self.target_pose)
+        # Ignore degenerate dt (e.g. clock jump, first tick)
+        if dt <= 0.0 or dt > 0.5:
+            return
+
+        # --- XY error in world frame ---
+        error = np.array([
+            self.target_pose.pose.position.x - self.current_pose.pose.position.x,
+            self.target_pose.pose.position.y - self.current_pose.pose.position.y,
+        ])
+
+        # --- PID terms ---
+        # Integral with anti-windup clamp (prevents integrator from accumulating
+        # during periods when the drone cannot respond, e.g. mechanical limits)
+        self.pid_integral += error * dt
+        self.pid_integral = np.clip(
+            self.pid_integral, -self.pid_integral_max, self.pid_integral_max
+        )
+
+        derivative = (error - self.pid_prev_error) / dt
+        self.pid_prev_error = error.copy()
+
+        vel_cmd = (
+            self.pid_kp * error +
+            self.pid_ki * self.pid_integral +
+            self.pid_kd * derivative
+        )
+        vel_cmd = np.clip(vel_cmd, -self.pid_max_vel, self.pid_max_vel)
+
+        # Deadband: zero out tiny velocity commands to prevent jitter at rest
+        dist_xy = float(np.linalg.norm(error))
+        if dist_xy < self.position_deadband:
+            vel_cmd = np.zeros(2)
+
+        # --- Publish PositionTarget: velocity XY + position Z + fixed yaw ---
+        # type_mask bits: 1=ignore px, 2=ignore py, 32=ignore vz,
+        #                 64=ignore afx, 128=ignore afy, 256=ignore afz, 2048=ignore yaw_rate
+        # Leaving pz, vx, vy, yaw unmasked so ArduPilot uses them.
+        IGNORE_PX        = 1
+        IGNORE_PY        = 2
+        IGNORE_VZ        = 32
+        IGNORE_AFX       = 64
+        IGNORE_AFY       = 128
+        IGNORE_AFZ       = 256
+        IGNORE_YAW_RATE  = 2048
+
+        msg = PositionTarget()
+        msg.header.stamp = now.to_msg()
+        msg.header.frame_id = 'map'
+        msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        msg.type_mask = (
+            IGNORE_PX | IGNORE_PY |
+            IGNORE_VZ |
+            IGNORE_AFX | IGNORE_AFY | IGNORE_AFZ |
+            IGNORE_YAW_RATE
+        )
+        msg.velocity.x = float(vel_cmd[0])
+        msg.velocity.y = float(vel_cmd[1])
+        msg.velocity.z = 0.0
+        msg.position.z = float(self.target_pose.pose.position.z)   # altitude hold
+        msg.yaw = 0.0                                               # hold current heading
+
+        self.setpoint_raw_pub.publish(msg)
+
+        # Diagnostics
+        dist_3d = self._calculate_distance(self.current_pose, self.target_pose)
+        self.get_logger().info(
+            f'PID | Error: X={error[0]:+.3f} Y={error[1]:+.3f} | '
+            f'Vel_cmd: X={vel_cmd[0]:+.3f} Y={vel_cmd[1]:+.3f} | '
+            f'Integral: X={self.pid_integral[0]:+.3f} Y={self.pid_integral[1]:+.3f} | '
+            f'Dist={dist_3d:.3f}m',
+            throttle_duration_sec=2.0
+        )
+
+        if dist_3d < self.position_tolerance:
+            self.get_logger().info(
+                f'Target reached (dist={dist_3d:.3f}m)',
+                throttle_duration_sec=2.0
+            )
     
     def arm(self):
         """Arm the drone"""
@@ -439,7 +541,11 @@ class FlightControllerNode(Node):
             target.pose.orientation.w = 1.0
         
         self.target_pose = target
-    
+        # Reset PID so integral from old target doesn't pull toward wrong position
+        self.pid_integral = np.zeros(2)
+        self.pid_prev_error = np.zeros(2)
+        self.pid_last_time = None
+
     def _calculate_distance(self, pose1: PoseStamped, pose2: PoseStamped) -> float:
         """Calculate Euclidean distance between two poses"""
         dx = pose1.pose.position.x - pose2.pose.position.x
