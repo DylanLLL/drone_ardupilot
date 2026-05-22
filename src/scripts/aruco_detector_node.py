@@ -39,7 +39,7 @@ class ArucoDetectorNode(Node):
         self.marker_size = self.get_parameter('marker_size').value
         aruco_dict_name = self.get_parameter('aruco_dict_type').value
         self.visualize = self.get_parameter('visualize').value
-        self.distance_scale_factor = 0.632
+        self.distance_scale_factor = self.get_parameter('distance_scale_factor').value
         
         # Initialize CV Bridge
         self.bridge = CvBridge()
