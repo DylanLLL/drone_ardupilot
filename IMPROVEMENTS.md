@@ -329,7 +329,7 @@ ekf_origin_alt: 0.0
 | `AHRS_EKF_TYPE` | `3` | Use EKF3 |
 | `EK3_ENABLE` | `1` | Enable EKF3 |
 | `EK3_SRC1_POSXY` | `6` | Horizontal position source = ExternalNav (vision) |
-| `EK3_SRC1_VELXY` | `6` | Horizontal velocity source = ExternalNav |
+| `EK3_SRC1_VELXY` | `0` | No external velocity is sent yet; use `6` only after publishing vision velocity |
 | `EK3_SRC1_POSZ` | `1` | Altitude source = Baro (`6` for vision Z if preferred) |
 | `EK3_SRC1_YAW` | `6` | **Heading from ExternalNav** — see critical note below |
 | `VISO_TYPE` | `1` | Accept MAVLink vision position |

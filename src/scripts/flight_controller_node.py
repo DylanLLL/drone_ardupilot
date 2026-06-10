@@ -86,12 +86,13 @@ class FlightControllerNode(Node):
         self.pid_prev_error = np.zeros(2)     # previous cycle error for derivative term
         self.pid_last_time = None             # timestamp of previous control cycle
 
-        # PositionTarget type_mask: velocity XY + position Z + fixed yaw.
+        # PositionTarget type_mask: velocity XY + position Z; keep current heading.
         # Computed once — bits are fixed for the lifetime of the node.
         self._setpoint_type_mask = (
             PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY |
             PositionTarget.IGNORE_VZ |
             PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ |
+            PositionTarget.IGNORE_YAW |
             PositionTarget.IGNORE_YAW_RATE
         )
         
@@ -168,6 +169,11 @@ class FlightControllerNode(Node):
         self.mavros_check_timer = self.create_timer(1.0, self._check_mavros_connection)
 
         self.get_logger().info('Flight Controller Node initialized')
+        self.get_logger().info(
+            f'XY PID: Kp={self.pid_kp:.3f} Ki={self.pid_ki:.3f} '
+            f'Kd={self.pid_kd:.3f} max_vel={self.pid_max_vel:.3f}m/s '
+            f'deadband={self.position_deadband:.3f}m'
+        )
     
     def _check_mavros_connection(self):
         """Non-blocking check for MAVROS connection"""
@@ -420,14 +426,17 @@ class FlightControllerNode(Node):
         msg.velocity.x = float(vel_cmd[0])
         msg.velocity.y = float(vel_cmd[1])
         msg.position.z = float(self.target_pose.pose.position.z)
-        msg.yaw = 0.0
 
         self.setpoint_raw_pub.publish(msg)
 
         # Diagnostics
         dist_3d = self._calculate_distance(self.current_pose, self.target_pose)
         self.get_logger().info(
-            f'PID | Error: X={error[0]:+.3f} Y={error[1]:+.3f} | '
+            f'PID | Current: X={self.current_pose.pose.position.x:+.3f} '
+            f'Y={self.current_pose.pose.position.y:+.3f} | '
+            f'Target: X={self.target_pose.pose.position.x:+.3f} '
+            f'Y={self.target_pose.pose.position.y:+.3f} | '
+            f'Error: X={error[0]:+.3f} Y={error[1]:+.3f} | '
             f'Vel_cmd: X={vel_cmd[0]:+.3f} Y={vel_cmd[1]:+.3f} | '
             f'Integral: X={self.pid_integral[0]:+.3f} Y={self.pid_integral[1]:+.3f} | '
             f'Dist={dist_3d:.3f}m',

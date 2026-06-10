@@ -88,6 +88,7 @@ class ArucoDetectorNode(Node):
         self.get_logger().info(f'Listening to camera topic: {camera_topic}')
         self.get_logger().info(f'Marker size: {self.marker_size}m')
         self.get_logger().info(f'ArUco dictionary: {aruco_dict_name}')
+        self.get_logger().info(f'Distance scale factor: {self.distance_scale_factor:.3f}')
     
     def _get_aruco_dict(self, dict_name: str):
         """Get ArUco dictionary from string name"""

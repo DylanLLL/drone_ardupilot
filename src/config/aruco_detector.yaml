@@ -1,6 +1,6 @@
 # ArUco Detector Configuration
 
-aruco_detector_node:
+aruco_detector:
   ros__parameters:
     # Camera topics
     camera_topic: '/camera/image_raw'

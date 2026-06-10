@@ -1,6 +1,6 @@
 # Flight Controller Configuration
 
-flight_controller_node:
+flight_controller:
   ros__parameters:
     # Altitude settings
     default_altitude: 1.5  # Default flight altitude in meters
@@ -39,7 +39,8 @@ flight_controller_node:
     # We have no GPS module, so the EKF needs an origin set explicitly before
     # position-controlled modes (GUIDED) will pass arming checks. The lat/lon is
     # arbitrary for local vision navigation. Requires the matching ArduPilot params:
-    #   GPS_TYPE=0, AHRS_EKF_TYPE=3, EK3_SRC1_POSXY=6, EK3_SRC1_VELXY=6 (ExternalNav)
+    #   GPS_TYPE=0, AHRS_EKF_TYPE=3, EK3_SRC1_POSXY=6
+    #   EK3_SRC1_VELXY=0 (None) because this project currently sends pose, not velocity
     set_ekf_origin: true
     ekf_origin_lat: 0.0
     ekf_origin_lon: 0.0

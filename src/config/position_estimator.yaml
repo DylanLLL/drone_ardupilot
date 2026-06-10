@@ -1,6 +1,6 @@
 # Position Estimator Configuration
 
-position_estimator_node:
+position_estimator:
   ros__parameters:
     # Marker map file (contains ArUco ID -> world position mapping)
     marker_map_file: 'src/maps/marker_map_single.yaml'  # Single marker at origin

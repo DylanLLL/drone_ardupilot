@@ -26,13 +26,16 @@ Ensure these parameters are set (use Mission Planner or MAVProxy):
 
 ```
 EK3_SRC1_POSXY = 6   (ExternalNav)
-EK3_SRC1_POSZ = 6    (ExternalNav)
-EK3_SRC1_VELXY = 6   (ExternalNav)
-EK3_SRC1_VELZ = 6    (ExternalNav)
-EK3_SRC1_YAW = 1     (Compass)
+EK3_SRC1_POSZ = 1    (Barometer)
+EK3_SRC1_VELXY = 0   (None - this project currently sends pose, not velocity)
+EK3_SRC1_VELZ = 0    (None - this project currently sends pose, not velocity)
+EK3_SRC1_YAW = 1     (Compass baseline)
 VISO_TYPE = 1        (MAV)
 GPS_TYPE = 0         (None - GPS disabled)
 ```
+
+Use `EK3_SRC1_YAW = 6` only after a no-prop bench test confirms that the
+published vision yaw follows the aircraft heading with the correct sign and offset.
 
 ### RC Transmitter Setup
 - **Channel 5 or 6**: Flight mode switch
