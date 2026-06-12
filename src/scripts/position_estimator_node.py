@@ -375,13 +375,21 @@ class PositionEstimatorNode(Node):
             )
             return
 
-        # Check for vision timeout
-        if self.vision_locked and self._check_vision_timeout():
-            self.get_logger().warn('Vision lost! Holding last known position', throttle_duration_sec=2.0)
-        
+        # Check for vision timeout. Critically: when vision is stale we must STOP
+        # feeding the pose to ArduPilot. Republishing the frozen pose with fresh
+        # timestamps tells the EKF "vision healthy, drone stationary" while the
+        # drone physically drifts — masking the loss from ArduPilot's EKF failsafe
+        # (the only protection in pilot modes like LOITER).
+        vision_stale = self.vision_locked and self._check_vision_timeout()
+        if vision_stale:
+            self.get_logger().warn(
+                'Vision lost! Withholding stale pose from MAVROS (EKF will coast)',
+                throttle_duration_sec=2.0
+            )
+
         try:
-            # Publish to MAVROS vision_pose for position feedback
-            if self.use_vision_position:
+            # Publish to MAVROS vision_pose for position feedback (fresh vision only)
+            if self.use_vision_position and not vision_stale:
                 vision_pose = PoseStamped()
                 vision_pose.header = self.current_pose.header
                 vision_pose.header.stamp = self.get_clock().now().to_msg()

@@ -39,8 +39,11 @@ class FlightControllerNode(Node):
         self.declare_parameter('pid_max_vel', 0.5)           # m/s: velocity cap per axis
         self.declare_parameter('pid_integral_max', 0.5)      # m·s: anti-windup clamp
 
-        # Vision-loss failsafe: command LAND if the marker stays lost this long while holding
+        # Vision-loss failsafe: command LAND if the marker stays lost this long while
+        # armed in any of the listed position-controlled modes. LOITER is included
+        # because it also relies on the vision-fed EKF for XY hold.
         self.declare_parameter('vision_loss_timeout', 2.0)   # seconds
+        self.declare_parameter('vision_failsafe_modes', ['GUIDED', 'LOITER'])
 
         # GPS-denied arming: set the EKF origin so position-controlled modes can arm
         # without a GPS module. Required when GPS_TYPE=0 and the EKF position source is
@@ -64,6 +67,7 @@ class FlightControllerNode(Node):
         self.pid_max_vel = self.get_parameter('pid_max_vel').value
         self.pid_integral_max = self.get_parameter('pid_integral_max').value
         self.vision_loss_timeout = self.get_parameter('vision_loss_timeout').value
+        self.vision_failsafe_modes = list(self.get_parameter('vision_failsafe_modes').value)
         self.set_ekf_origin = self.get_parameter('set_ekf_origin').value
         self.ekf_origin_lat = self.get_parameter('ekf_origin_lat').value
         self.ekf_origin_lon = self.get_parameter('ekf_origin_lon').value
@@ -350,11 +354,14 @@ class FlightControllerNode(Node):
 
         is_armed = self.mavros_state is not None and self.mavros_state.armed
         is_guided = self.mavros_state is not None and self.mavros_state.mode == 'GUIDED'
+        in_vision_mode = (self.mavros_state is not None
+                          and self.mavros_state.mode in self.vision_failsafe_modes)
 
         # Vision-loss failsafe: once the marker is lost the position estimate goes
-        # stale, so the PID would hold against a frozen setpoint while the drone
-        # drifts blind. Command LAND instead. One-shot; re-armed on fresh detection.
-        if (is_armed and is_guided and self.last_aruco_time is not None
+        # stale and the drone holds/drifts blind — in GUIDED via the Python PID, in
+        # LOITER via the EKF coasting on IMU. Command LAND instead. One-shot;
+        # re-armed on fresh detection.
+        if (is_armed and in_vision_mode and self.last_aruco_time is not None
                 and not self.vision_loss_landing):
             vision_age = (self.get_clock().now() - self.last_aruco_time).nanoseconds / 1e9
             if vision_age > self.vision_loss_timeout:

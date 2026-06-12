@@ -30,10 +30,12 @@ flight_controller:
     pid_integral_max: 0.5  # Anti-windup clamp on integral term (m·s)
 
     # Vision-loss failsafe
-    # If the ArUco marker stays out of view this long while holding in GUIDED,
-    # the position estimate is stale and the drone is drifting blind, so we
-    # command LAND. Lower = lands sooner (safer); raise if brief dropouts are common.
+    # If the ArUco marker stays out of view this long while armed in one of the
+    # modes below, the position estimate is stale and the drone is drifting blind,
+    # so we command LAND. Lower = lands sooner (safer); raise if dropouts are common.
+    # LOITER is included because its XY hold also depends on the vision-fed EKF.
     vision_loss_timeout: 2.0  # seconds
+    vision_failsafe_modes: ['GUIDED', 'LOITER']
 
     # GPS-denied arming
     # We have no GPS module, so the EKF needs an origin set explicitly before
