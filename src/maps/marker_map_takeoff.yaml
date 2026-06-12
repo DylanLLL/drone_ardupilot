@@ -1,0 +1,21 @@
+# Takeoff Pad Marker Map
+# Small marker placed directly under the camera at the drone's starting position,
+# enabling vision lock BEFORE takeoff (GUIDED arming on the ground).
+#
+# The marker's physical size must be declared in config/aruco_detector.yaml via
+# marker_size_ids / marker_size_values (e.g. ID 0 -> 0.03 m), otherwise the
+# estimated altitude is wrong by size_assumed / size_real.
+
+markers:
+  - id: 0
+    position:
+      x: 0.0  # Takeoff position X (meters)
+      y: 0.0  # Takeoff position Y (meters)
+      z: 0.0  # Ground level
+    description: "3cm takeoff pad marker - place under camera at start position"
+
+# Usage:
+# 1. Place the small ArUco marker (ID 0, 3cm) on the ground under the camera
+# 2. Marker defines the origin (0, 0, 0) of the world coordinate frame
+# 3. Marker's red axis should point in your "forward" direction (X+)
+# 4. Vision position is valid before arming; takeoff can start in GUIDED

@@ -7,8 +7,15 @@ aruco_detector:
     camera_info_topic: '/camera/camera_info'
 
     # ArUco marker parameters
-    marker_size: 0.15  # Size of ArUco markers in meters (measure outer black border)
+    marker_size: 0.15  # Default size of ArUco markers in meters (measure outer black border)
     aruco_dict_type: 'DICT_4X4_50'  # ArUco dictionary type
+
+    # Per-ID marker size overrides (parallel arrays: ids[i] has size values[i] meters).
+    # Pose distance scales linearly with the assumed size, so small takeoff-pad
+    # markers MUST declare their true size here or altitude reads ~5x too far.
+    # IDs not listed fall back to marker_size above (the 15cm flight grid).
+    marker_size_ids: [0, 1]
+    marker_size_values: [0.03, 0.02]   # ID 0 = 3cm takeoff pad, ID 1 = 2cm test marker
 
     # Distance calibration correction
     # If ArUco reports wrong distance, adjust this factor

@@ -27,11 +27,17 @@ class ArucoDetectorNode(Node):
         # Declare parameters
         self.declare_parameter('camera_topic', '/camera/image_raw')
         self.declare_parameter('camera_info_topic', '/camera/camera_info')
-        self.declare_parameter('marker_size', 0.15)  # ArUco marker size in meters
+        self.declare_parameter('marker_size', 0.15)  # Default ArUco marker size in meters
         self.declare_parameter('aruco_dict_type', 'DICT_4X4_50')
         self.declare_parameter('visualize', True)
         self.declare_parameter('publish_rate', 30.0)
         self.declare_parameter('distance_scale_factor', 1.0)  # Distance correction factor
+        # Per-ID marker size overrides (parallel arrays — ROS2 params can't hold dicts).
+        # Pose estimation scales linearly with the assumed marker dimension, so small
+        # takeoff-pad markers (e.g. 3cm under the camera at rest) must declare their
+        # true size or the reported distance is wrong by size_assumed / size_real.
+        self.declare_parameter('marker_size_ids', [-1])      # marker IDs with a non-default size
+        self.declare_parameter('marker_size_values', [0.0])  # matching sizes in meters
 
         # Get parameters
         camera_topic = self.get_parameter('camera_topic').value
@@ -40,6 +46,7 @@ class ArucoDetectorNode(Node):
         aruco_dict_name = self.get_parameter('aruco_dict_type').value
         self.visualize = self.get_parameter('visualize').value
         self.distance_scale_factor = self.get_parameter('distance_scale_factor').value
+        self.marker_sizes = self._build_marker_size_map()
         
         # Initialize CV Bridge
         self.bridge = CvBridge()
@@ -86,10 +93,30 @@ class ArucoDetectorNode(Node):
         
         self.get_logger().info('ArUco Detector Node initialized')
         self.get_logger().info(f'Listening to camera topic: {camera_topic}')
-        self.get_logger().info(f'Marker size: {self.marker_size}m')
+        self.get_logger().info(f'Default marker size: {self.marker_size}m')
+        if self.marker_sizes:
+            overrides = ', '.join(f'ID {mid}: {size}m' for mid, size in sorted(self.marker_sizes.items()))
+            self.get_logger().info(f'Per-ID marker size overrides: {overrides}')
         self.get_logger().info(f'ArUco dictionary: {aruco_dict_name}')
         self.get_logger().info(f'Distance scale factor: {self.distance_scale_factor:.3f}')
-    
+
+    def _build_marker_size_map(self) -> dict:
+        """Build {marker_id: size_m} from the parallel override parameters"""
+        ids = self.get_parameter('marker_size_ids').value or []
+        values = self.get_parameter('marker_size_values').value or []
+        # [-1] / [0.0] are the "no overrides" placeholders
+        pairs = [(int(i), float(v)) for i, v in zip(ids, values) if i >= 0 and v > 0.0]
+        if len(ids) != len(values):
+            self.get_logger().warn(
+                f'marker_size_ids ({len(ids)}) and marker_size_values ({len(values)}) '
+                f'length mismatch — extra entries ignored'
+            )
+        return dict(pairs)
+
+    def _get_marker_size(self, marker_id: int) -> float:
+        """Physical size for a marker ID, falling back to the global default"""
+        return self.marker_sizes.get(marker_id, self.marker_size)
+
     def _get_aruco_dict(self, dict_name: str):
         """Get ArUco dictionary from string name"""
         aruco_dict_map = {
@@ -154,14 +181,23 @@ class ArucoDetectorNode(Node):
             
             # Process detections
             if ids is not None and len(ids) > 0:
-                # Estimate pose for each marker
-                rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-                    corners,
-                    self.marker_size,
-                    self.camera_matrix,
-                    self.dist_coeffs
-                )
-                
+                # Estimate pose per marker with its own physical size — pose scales
+                # linearly with the assumed dimension, so mixed-size setups (small
+                # takeoff pad + large flight grid) need per-ID sizes
+                rvecs = []
+                tvecs = []
+                for i in range(len(ids)):
+                    size = self._get_marker_size(ids[i][0])
+                    rv, tv, _ = aruco.estimatePoseSingleMarkers(
+                        [corners[i]],
+                        size,
+                        self.camera_matrix,
+                        self.dist_coeffs
+                    )
+                    rvecs.append(rv[0])
+                    tvecs.append(tv[0])
+
+
                 # Create PoseArray message
                 pose_array = PoseArray()
                 pose_array.header = Header()
@@ -254,7 +290,7 @@ class ArucoDetectorNode(Node):
                 self.dist_coeffs,
                 rvecs[i],
                 tvecs[i],
-                self.marker_size * 0.5
+                self._get_marker_size(marker_id) * 0.5
             )
 
             # Calculate yaw angle
