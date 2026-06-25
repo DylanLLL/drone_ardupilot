@@ -12,7 +12,7 @@ markers:
       x: 0.0  # Takeoff position X (meters)
       y: 0.0  # Takeoff position Y (meters)
       z: 0.0  # Ground level
-    description: "3cm takeoff pad marker - place under camera at start position"
+    description: "15cm takeoff marker - place under camera at start position"
 
 # Usage:
 # 1. Place the small ArUco marker (ID 0, 3cm) on the ground under the camera

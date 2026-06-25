@@ -20,6 +20,15 @@ position_estimator:
     # Bootstrap mode - enables dummy position publishing before vision locks
     enable_bootstrap_mode: true
 
+    # Camera lever arm — position of the camera relative to the FC/body centre, in
+    # body axes (X=forward, Y=right, Z=down), metres. The vision math returns the
+    # camera's position; this corrects it to the drone centre. Set camera_offset_forward
+    # to the measured forward distance from the FC centre to the lens for a front-mounted
+    # camera. Without it, yaw rotation produces a phantom XY translation (drift).
+    camera_offset_forward: 0.0   # e.g. 0.08 if the lens sits 8cm ahead of the FC
+    camera_offset_right: 0.0
+    camera_offset_down: 0.0
+
     # EMA filter alpha for position and yaw smoothing
     # Higher = more responsive but noisier (less lag = less ArduPilot overcorrection)
     # Lower  = smoother but introduces lag (lag causes the EKF to overcorrect)
