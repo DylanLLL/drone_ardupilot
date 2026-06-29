@@ -8,7 +8,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped, PoseArray
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Int32MultiArray
 from cv_bridge import CvBridge
 import cv2
 import cv2.aruco as aruco
@@ -79,6 +79,12 @@ class ArucoDetectorNode(Node):
         self.pose_array_pub = self.create_publisher(
             PoseArray,
             '/aruco/poses',
+            10
+        )
+
+        self.marker_ids_pub = self.create_publisher(
+            Int32MultiArray,
+            '/aruco/ids',
             10
         )
         
@@ -203,6 +209,7 @@ class ArucoDetectorNode(Node):
                 pose_array.header = Header()
                 pose_array.header.stamp = self.get_clock().now().to_msg()
                 pose_array.header.frame_id = 'camera_frame'
+                marker_ids_msg = Int32MultiArray()
                 
                 self.latest_detections = []
                 
@@ -230,6 +237,7 @@ class ArucoDetectorNode(Node):
                     pose.pose.orientation.w = quaternion[3]
 
                     pose_array.poses.append(pose.pose)
+                    marker_ids_msg.data.append(int(marker_id))
                     self.latest_detections.append((marker_id, pose))
 
                     # Log detection with both raw and corrected distances
@@ -257,7 +265,9 @@ class ArucoDetectorNode(Node):
                             throttle_duration_sec=1.0
                         )
                 
-                # Publish pose array
+                # Publish IDs immediately before poses so subscribers usually see
+                # the matching ID list before processing the PoseArray.
+                self.marker_ids_pub.publish(marker_ids_msg)
                 self.pose_array_pub.publish(pose_array)
                 
                 # Visualize if enabled

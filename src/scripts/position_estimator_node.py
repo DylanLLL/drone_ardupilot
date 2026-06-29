@@ -10,6 +10,7 @@ from geometry_msgs.msg import PoseStamped, PoseArray, TransformStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State, PositionTarget
 from mavros_msgs.srv import CommandBool, SetMode
+from std_msgs.msg import Int32MultiArray
 import numpy as np
 import yaml
 from pathlib import Path
@@ -86,6 +87,7 @@ class PositionEstimatorNode(Node):
         # Vision state
         self.vision_locked = False
         self.last_aruco_detection_time = None
+        self.latest_aruco_ids = []
         
         # MAVROS state
         self.mavros_state: Optional[State] = None
@@ -100,6 +102,13 @@ class PositionEstimatorNode(Node):
             PoseArray,
             '/aruco/poses',
             self.aruco_callback,
+            10
+        )
+
+        self.aruco_ids_sub = self.create_subscription(
+            Int32MultiArray,
+            '/aruco/ids',
+            self.aruco_ids_callback,
             10
         )
         
@@ -170,6 +179,10 @@ class PositionEstimatorNode(Node):
         self.mavros_state = msg
         self.is_armed = msg.armed
         self.current_mode = msg.mode
+
+    def aruco_ids_callback(self, msg: Int32MultiArray):
+        """Track marker IDs that correspond to the latest /aruco/poses array."""
+        self.latest_aruco_ids = [int(marker_id) for marker_id in msg.data]
     
     def aruco_callback(self, msg: PoseArray):
         """Process ArUco detections and estimate position"""
@@ -180,13 +193,7 @@ class PositionEstimatorNode(Node):
         self.last_aruco_detection_time = self.get_clock().now()
         
         try:
-            # For now, use the first detected marker
-            marker_pose_camera = msg.poses[0]
-
-            # TODO: Get marker ID from custom message
-            # For now, try all markers in the map (works for single marker setup)
-            # Assume the detected marker is one of our known markers
-            marker_id = list(self.marker_map.keys())[0] if self.marker_map else 0
+            marker_pose_camera, marker_id = self._select_marker_pose(msg)
 
             if marker_id in self.marker_map:
                 drone_position_raw, raw_yaw = self._estimate_drone_position_from_marker(
@@ -249,12 +256,34 @@ class PositionEstimatorNode(Node):
                 
         except Exception as e:
             self.get_logger().error(f'Error estimating position: {str(e)}')
+
+    def _select_marker_pose(self, msg: PoseArray):
+        """
+        Select the first detected marker that exists in the configured marker map.
+
+        The detector publishes marker IDs on /aruco/ids in the same order as
+        /aruco/poses. If that side-channel is not available yet, keep the legacy
+        single-marker fallback so existing launch files still work.
+        """
+        if self.latest_aruco_ids and len(self.latest_aruco_ids) == len(msg.poses):
+            for pose, marker_id in zip(msg.poses, self.latest_aruco_ids):
+                if not self.marker_map or marker_id in self.marker_map:
+                    return pose, marker_id
+
+            self.get_logger().warn(
+                f'Detected marker IDs {self.latest_aruco_ids}, but none are in marker map',
+                throttle_duration_sec=2.0
+            )
+            return msg.poses[0], self.latest_aruco_ids[0]
+
+        marker_id = list(self.marker_map.keys())[0] if self.marker_map else 0
+        return msg.poses[0], marker_id
     
     def _estimate_drone_position_from_marker(
         self,
         marker_pose_camera,
         marker_position_world: np.ndarray
-    ) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
+    ) -> Tuple[np.ndarray, float]:
         """
         Estimate drone position and yaw in world frame from a detected ArUco marker.
 

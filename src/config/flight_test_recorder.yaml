@@ -1,0 +1,32 @@
+# Flight Test Recorder Configuration
+
+flight_test_recorder:
+  ros__parameters:
+    # Logs are written on the drone/Pi. Use a persistent directory with enough space.
+    log_directory: '~/drone_test_logs'
+    session_name: ''
+
+    # Topic sample rate for samples.csv. Keep modest to avoid SD-card churn.
+    sample_rate: 5.0
+
+    # Image-quality metric rate. This computes brightness and blur, not video.
+    image_metrics_rate: 2.0
+    camera_topic: '/camera/image_raw'
+
+    # Wait a few seconds for MAVROS before trying /mavros/param/get.
+    param_capture_delay: 5.0
+
+    tracked_params:
+      - 'EK3_SRC1_POSXY'
+      - 'EK3_SRC1_POSZ'
+      - 'EK3_SRC1_VELXY'
+      - 'EK3_SRC1_YAW'
+      - 'VISO_TYPE'
+      - 'GPS_TYPE'
+      - 'PSC_POSXY_P'
+      - 'PSC_VELXY_P'
+      - 'PSC_VELXY_I'
+      - 'PSC_VELXY_D'
+      - 'PSC_VELXY_FILT_HZ'
+      - 'MOT_THST_HOVER'
+      - 'MOT_HOVER_LEARN'
