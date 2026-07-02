@@ -1,5 +1,8 @@
 # Python dependencies for warehouse drone navigation
-numpy>=1.21.0
+# NumPy MUST stay <2: ROS 2 Humble's cv_bridge/OpenCV on Ubuntu 22.04 are compiled
+# against the NumPy 1.x ABI. NumPy 2.x triggers "_ARRAY_API not found" and crashes
+# the cv_bridge import, taking down aruco_detector_node before it can publish.
+numpy>=1.21.0,<2
 opencv-contrib-python>=4.5.0
 PyYAML>=5.4.0
 transforms3d>=0.4.0
