@@ -3,6 +3,10 @@
 # against the NumPy 1.x ABI. NumPy 2.x triggers "_ARRAY_API not found" and crashes
 # the cv_bridge import, taking down aruco_detector_node before it can publish.
 numpy>=1.21.0,<2
-opencv-contrib-python>=4.5.0
+# OpenCV pinned to 4.7.x: the detector uses aruco.DetectorParameters() (added in
+# 4.7) AND aruco.estimatePoseSingleMarkers() (removed in 4.8+), so 4.7 is the only
+# compatible window. It also predates opencv's numpy>=2 requirement, so it coexists
+# with the numpy<2 pin above (4.8+ wheels pull numpy 2.x and re-break cv_bridge).
+opencv-contrib-python>=4.7,<4.8
 PyYAML>=5.4.0
 transforms3d>=0.4.0
