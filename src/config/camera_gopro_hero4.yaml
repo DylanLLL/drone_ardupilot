@@ -1,0 +1,51 @@
+# Camera profile: GoPro HERO4 (via HDMI -> USB capture card)
+#
+# The HERO4 has no USB webcam (UVC) mode — that only arrived with HERO8+ — and
+# its WiFi preview stream has 1-2s latency, which exceeds the 2s vision-loss
+# failsafe and is unusable for the 20Hz control loop. The supported path is:
+#
+#   GoPro micro-HDMI  ->  HDMI-USB capture card (UVC)  ->  RPi USB  ->  usb_cam
+#
+# The capture card enumerates as a standard V4L2 device, so the existing
+# usb_cam driver works unchanged. See GOPRO_HERO4_SETUP.md for the GoPro
+# settings (FOV, OSD off, auto-off never) and the REQUIRED calibration step.
+#
+# Used by:  start_drone.sh (CAMERA_PROFILE=gopro_hero4, the default)
+#           warehouse_nav.launch.py / aruco_test.launch.py (camera:=gopro_hero4)
+# Manual:   ros2 run usb_cam usb_cam_node_exe --ros-args \
+#             --params-file <this file> -r __ns:=/camera
+
+/**:
+  ros__parameters:
+    # Capture card device. If the Pi has more than one video device, find the
+    # capture card with `v4l2-ctl --list-devices` and prefer the stable
+    # /dev/v4l/by-id/... path over /dev/videoN (enumeration order can change).
+    video_device: '/dev/video0'
+
+    # 720p30 is the sweet spot on a Pi 4B: ~2x the angular resolution of the
+    # C270's 640x480 (better detection at altitude) while keeping MJPEG decode
+    # + ArUco detection within budget. Drop to 640x480 if CPU-bound — but
+    # RECALIBRATE at whatever resolution you fly.
+    image_width: 1280
+    image_height: 720
+    framerate: 30.0
+
+    # Cheap USB2.0 capture cards can't push 720p30 uncompressed (YUYV tops out
+    # ~10fps); MJPEG is the only format that sustains 30fps. mjpeg2rgb decodes
+    # to rgb8 for cv_bridge.
+    pixel_format: 'mjpeg2rgb'
+    io_method: 'mmap'
+
+    # Both spellings so the profile works across usb_cam versions (older ports
+    # declared camera_frame_id, current ones frame_id); the unknown one is
+    # silently ignored.
+    frame_id: 'camera_frame'
+    camera_frame_id: 'camera_frame'
+
+    # Must match camera_name inside the calibration file below.
+    camera_name: 'gopro_hero4'
+
+    # PLACEHOLDER calibration ships with zero focal length; aruco_detector_node
+    # refuses it and keeps warning until you calibrate for real. Calibrate at
+    # the exact resolution + GoPro FOV setting you fly with (GOPRO_HERO4_SETUP.md).
+    camera_info_url: 'package://warehouse_drone_nav/config/camera_calibration_gopro_hero4.yaml'

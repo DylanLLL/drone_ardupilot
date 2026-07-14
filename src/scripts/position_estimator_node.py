@@ -10,6 +10,7 @@ from geometry_msgs.msg import PoseStamped, PoseArray, TransformStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State, PositionTarget
 from mavros_msgs.srv import CommandBool, SetMode
+from std_msgs.msg import Int32MultiArray
 import numpy as np
 import yaml
 from pathlib import Path
@@ -43,10 +44,28 @@ class PositionEstimatorNode(Node):
         self.declare_parameter('min_marker_confidence', 0.7)
         self.declare_parameter('position_filter_alpha', 0.6)  # 0.3=heavy smoothing, 0.7=light smoothing
 
+        # Camera lever arm: position of the camera relative to the body/FC centre,
+        # in body axes (X=forward, Y=right, Z=down), in metres. The vision formula
+        # returns the CAMERA's world position; this offset corrects it to the drone
+        # centre. A camera mounted forward of the FC needs camera_offset_forward > 0,
+        # otherwise any yaw rotation sweeps the offset and the EKF sees a phantom
+        # XY translation it will chase (drift). Measure with a ruler from the FC
+        # centre to the camera lens. Leave at 0 if the camera sits over the centre.
+        self.declare_parameter('camera_offset_forward', 0.0)
+        self.declare_parameter('camera_offset_right', 0.0)
+        self.declare_parameter('camera_offset_down', 0.0)
+
         # Get parameters
         marker_map_file = self.get_parameter('marker_map_file').value
         self.use_vision_position = self.get_parameter('use_vision_position').value
         publish_rate = self.get_parameter('publish_rate').value
+        cam_offset = np.array([
+            self.get_parameter('camera_offset_forward').value,
+            self.get_parameter('camera_offset_right').value,
+            self.get_parameter('camera_offset_down').value,
+        ])
+        # None = fast path (no correction) when the camera is centred
+        self._cam_offset_body = cam_offset if np.any(cam_offset) else None
         self.filter_alpha = self.get_parameter('position_filter_alpha').value
         
         # Load marker map (ArUco ID -> world position)
@@ -68,6 +87,7 @@ class PositionEstimatorNode(Node):
         # Vision state
         self.vision_locked = False
         self.last_aruco_detection_time = None
+        self.latest_aruco_ids = []
         
         # MAVROS state
         self.mavros_state: Optional[State] = None
@@ -82,6 +102,13 @@ class PositionEstimatorNode(Node):
             PoseArray,
             '/aruco/poses',
             self.aruco_callback,
+            10
+        )
+
+        self.aruco_ids_sub = self.create_subscription(
+            Int32MultiArray,
+            '/aruco/ids',
+            self.aruco_ids_callback,
             10
         )
         
@@ -152,6 +179,10 @@ class PositionEstimatorNode(Node):
         self.mavros_state = msg
         self.is_armed = msg.armed
         self.current_mode = msg.mode
+
+    def aruco_ids_callback(self, msg: Int32MultiArray):
+        """Track marker IDs that correspond to the latest /aruco/poses array."""
+        self.latest_aruco_ids = [int(marker_id) for marker_id in msg.data]
     
     def aruco_callback(self, msg: PoseArray):
         """Process ArUco detections and estimate position"""
@@ -162,13 +193,7 @@ class PositionEstimatorNode(Node):
         self.last_aruco_detection_time = self.get_clock().now()
         
         try:
-            # For now, use the first detected marker
-            marker_pose_camera = msg.poses[0]
-
-            # TODO: Get marker ID from custom message
-            # For now, try all markers in the map (works for single marker setup)
-            # Assume the detected marker is one of our known markers
-            marker_id = list(self.marker_map.keys())[0] if self.marker_map else 0
+            marker_pose_camera, marker_id = self._select_marker_pose(msg)
 
             if marker_id in self.marker_map:
                 drone_position_raw, raw_yaw = self._estimate_drone_position_from_marker(
@@ -231,12 +256,34 @@ class PositionEstimatorNode(Node):
                 
         except Exception as e:
             self.get_logger().error(f'Error estimating position: {str(e)}')
+
+    def _select_marker_pose(self, msg: PoseArray):
+        """
+        Select the first detected marker that exists in the configured marker map.
+
+        The detector publishes marker IDs on /aruco/ids in the same order as
+        /aruco/poses. If that side-channel is not available yet, keep the legacy
+        single-marker fallback so existing launch files still work.
+        """
+        if self.latest_aruco_ids and len(self.latest_aruco_ids) == len(msg.poses):
+            for pose, marker_id in zip(msg.poses, self.latest_aruco_ids):
+                if not self.marker_map or marker_id in self.marker_map:
+                    return pose, marker_id
+
+            self.get_logger().warn(
+                f'Detected marker IDs {self.latest_aruco_ids}, but none are in marker map',
+                throttle_duration_sec=2.0
+            )
+            return msg.poses[0], self.latest_aruco_ids[0]
+
+        marker_id = list(self.marker_map.keys())[0] if self.marker_map else 0
+        return msg.poses[0], marker_id
     
     def _estimate_drone_position_from_marker(
         self,
         marker_pose_camera,
         marker_position_world: np.ndarray
-    ) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
+    ) -> Tuple[np.ndarray, float]:
         """
         Estimate drone position and yaw in world frame from a detected ArUco marker.
 
@@ -273,8 +320,18 @@ class PositionEstimatorNode(Node):
             cam_z  # altitude = camera distance to ground (not rotated)
         ])
 
+        # Camera-to-body rotation gives both yaw and the world-frame direction of
+        # the camera lever arm.
         R_world_body = R_cam_marker.T @ self._R_BODY_CAM.T
         yaw = math.atan2(R_world_body[1, 0], R_world_body[0, 0])
+
+        # Lever-arm correction: drone_position above is the CAMERA's world position.
+        # Rotate the body-frame camera offset into the world frame and subtract it so
+        # the reported position tracks the drone centre rather than the camera.
+        if self._cam_offset_body is not None:
+            world_lever = R_world_body @ self._cam_offset_body
+            drone_position[0] -= world_lever[0]
+            drone_position[1] -= world_lever[1]
 
         self.get_logger().info(
             f'Cam=({cam_x:.3f}, {cam_y:.3f}, {cam_z:.3f}) | '
@@ -375,13 +432,21 @@ class PositionEstimatorNode(Node):
             )
             return
 
-        # Check for vision timeout
-        if self.vision_locked and self._check_vision_timeout():
-            self.get_logger().warn('Vision lost! Holding last known position', throttle_duration_sec=2.0)
-        
+        # Check for vision timeout. Critically: when vision is stale we must STOP
+        # feeding the pose to ArduPilot. Republishing the frozen pose with fresh
+        # timestamps tells the EKF "vision healthy, drone stationary" while the
+        # drone physically drifts — masking the loss from ArduPilot's EKF failsafe
+        # (the only protection in pilot modes like LOITER).
+        vision_stale = self.vision_locked and self._check_vision_timeout()
+        if vision_stale:
+            self.get_logger().warn(
+                'Vision lost! Withholding stale pose from MAVROS (EKF will coast)',
+                throttle_duration_sec=2.0
+            )
+
         try:
-            # Publish to MAVROS vision_pose for position feedback
-            if self.use_vision_position:
+            # Publish to MAVROS vision_pose for position feedback (fresh vision only)
+            if self.use_vision_position and not vision_stale:
                 vision_pose = PoseStamped()
                 vision_pose.header = self.current_pose.header
                 vision_pose.header.stamp = self.get_clock().now().to_msg()

@@ -11,15 +11,17 @@ Autonomous indoor navigation system for drones using ArUco markers for localizat
 - Flysky FS-i6 RC transmitter + FS-iA6B receiver
 - Pixhawk 6C flight controller
 - Raspberry Pi 4B companion computer
-- Logitech C270 webcam
+- GoPro HERO4 + HDMI-to-USB capture card (UVC) — main camera (see `GOPRO_HERO4_SETUP.md`)
+- Logitech C270 webcam — legacy fallback camera
 - 3S 5200mAh LiPo battery
 
 ### Connections
 1. **Pixhawk to RPi**: Connect via USB or serial (TELEM2)
-2. **Camera to RPi**: USB connection
+2. **Camera to RPi**: GoPro micro-HDMI → HDMI-USB capture card → RPi USB
+   (the HERO4 has no USB webcam mode; C270 fallback connects via plain USB)
 3. **ESCs to Pixhawk**: Connect to MAIN OUT ports
 4. **RC Receiver to Pixhawk**: Connect to RC IN port
-5. **Power**: Connect battery to power distribution board
+5. **Power**: Connect battery to power distribution board (GoPro powered via USB, Auto Off = Never)
 
 ## Software Stack
 
@@ -107,7 +109,13 @@ ros2 run camera_calibration cameracalibrator \
     camera:=/camera
 ```
 
-Save the calibration file and update the camera parameters.
+Save the calibration into the profile's calibration file
+(`src/config/camera_calibration_gopro_hero4.yaml` for the GoPro,
+`src/config/camera_calibration.yaml` for the C270) and rebuild.
+
+**GoPro note:** the GoPro profile ships with a placeholder calibration and the
+detector refuses to run until it is replaced with a real one, calibrated at the
+FOV/resolution you fly with — full walkthrough in `GOPRO_HERO4_SETUP.md`.
 
 ### 2. ArUco Markers
 - **Print markers**: Use the DICT_4X4_50 dictionary
@@ -164,17 +172,23 @@ ros2 launch mavros px4.launch fcu_url:=/dev/ttyUSB0:921600
 ```
 
 ### 2. Start Camera Node
-In terminal 2:
+In terminal 2 — all camera settings live in profile files under `src/config/`
+(`camera_gopro_hero4.yaml` is the default source, `camera_c270.yaml` the fallback):
 ```bash
-# For USB camera
+# GoPro HERO4 via HDMI-USB capture card (main camera)
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-    -p video_device:=/dev/video0 \
-    -p image_width:=640 \
-    -p image_height:=480 \
-    -p pixel_format:=yuyv \
-    -p camera_frame_id:=camera_frame \
+    --params-file $(ros2 pkg prefix warehouse_drone_nav)/share/warehouse_drone_nav/config/camera_gopro_hero4.yaml \
+    -r __ns:=/camera
+
+# Legacy Logitech C270 fallback
+ros2 run usb_cam usb_cam_node_exe --ros-args \
+    --params-file $(ros2 pkg prefix warehouse_drone_nav)/share/warehouse_drone_nav/config/camera_c270.yaml \
     -r __ns:=/camera
 ```
+
+This manual step is optional: `warehouse_nav.launch.py` and
+`aruco_test.launch.py` now launch the camera themselves (`camera:=gopro_hero4`
+by default; pass `camera:=c270` or `camera:=none` to override).
 
 ### 3. Test ArUco Detection
 In terminal 3:
@@ -245,10 +259,10 @@ ros2 run rqt_console rqt_console
 
 ```
 ┌─────────────────┐
-│  Logitech C270  │
-│     Camera      │
+│   GoPro HERO4   │
+│ (HDMI capture)  │
 └────────┬────────┘
-         │ USB
+         │ USB (UVC)
          ▼
 ┌─────────────────────────────────────────┐
 │         Raspberry Pi 4B                 │

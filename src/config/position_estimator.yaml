@@ -3,7 +3,10 @@
 position_estimator:
   ros__parameters:
     # Marker map file (contains ArUco ID -> world position mapping)
-    marker_map_file: 'src/maps/marker_map_single.yaml'  # Single marker at origin
+    marker_map_file: 'src/maps/marker_map_takeoff.yaml'  # 15cm takeoff marker (ID 0) at origin
+    # Alternative maps:
+    #   'src/maps/marker_map_single.yaml'  - single 15cm marker (ID 1) at origin
+    #   'src/maps/marker_map_sample.yaml'  - 5-marker flight grid
 
     # Vision positioning
     use_vision_position: true  # Publish to MAVROS vision_pose topic
@@ -16,6 +19,15 @@ position_estimator:
 
     # Bootstrap mode - enables dummy position publishing before vision locks
     enable_bootstrap_mode: true
+
+    # Camera lever arm — position of the camera relative to the FC/body centre, in
+    # body axes (X=forward, Y=right, Z=down), metres. The vision math returns the
+    # camera's position; this corrects it to the drone centre. Set camera_offset_forward
+    # to the measured forward distance from the FC centre to the lens for a front-mounted
+    # camera. Without it, yaw rotation produces a phantom XY translation (drift).
+    camera_offset_forward: 0.0   # e.g. 0.08 if the lens sits 8cm ahead of the FC
+    camera_offset_right: 0.0
+    camera_offset_down: 0.0
 
     # EMA filter alpha for position and yaw smoothing
     # Higher = more responsive but noisier (less lag = less ArduPilot overcorrection)

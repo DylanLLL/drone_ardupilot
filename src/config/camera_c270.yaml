@@ -1,0 +1,31 @@
+# Camera profile: Logitech C270 webcam (legacy fallback)
+#
+# Mirrors the original hardcoded usb_cam invocation so the C270 remains one
+# switch away while the GoPro HERO4 profile is being proven out.
+#
+# Used by:  start_drone.sh (CAMERA_PROFILE=c270)
+#           warehouse_nav.launch.py / aruco_test.launch.py (camera:=c270)
+# Manual:   ros2 run usb_cam usb_cam_node_exe --ros-args \
+#             --params-file <this file> -r __ns:=/camera
+
+/**:
+  ros__parameters:
+    video_device: '/dev/video0'
+    image_width: 640
+    image_height: 480
+    framerate: 30.0
+    pixel_format: 'yuyv'
+    io_method: 'mmap'
+
+    # Both spellings so the profile works across usb_cam versions (older ports
+    # declared camera_frame_id, current ones frame_id); the unknown one is
+    # silently ignored.
+    frame_id: 'camera_frame'
+    camera_frame_id: 'camera_frame'
+
+    # Matches camera_name inside camera_calibration.yaml (calibration tool default).
+    camera_name: 'narrow_stereo'
+
+    # Existing C270 calibration, resolved from the installed package share so
+    # the path no longer depends on where the repo is cloned.
+    camera_info_url: 'package://warehouse_drone_nav/config/camera_calibration.yaml'
