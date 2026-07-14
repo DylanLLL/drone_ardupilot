@@ -1,2 +1,10 @@
 __pycache__/
 *.pyc
+
+# ROS2 / colcon build artifacts (never commit — machine-specific)
+build/
+install/
+log/
+
+# Calibration session dumps
+calibrationdata.tar.gz

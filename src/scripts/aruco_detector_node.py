@@ -149,7 +149,23 @@ class ArucoDetectorNode(Node):
     def camera_info_callback(self, msg: CameraInfo):
         """Callback for camera calibration info"""
         if not self.camera_info_received:
-            self.camera_matrix = np.array(msg.k).reshape(3, 3)
+            camera_matrix = np.array(msg.k).reshape(3, 3)
+
+            # Reject uncalibrated cameras (zero focal length). The GoPro profile
+            # ships with a placeholder calibration file that is all zeros, so a
+            # missed calibration fails loudly on the bench instead of feeding
+            # garbage poses to the EKF in the air.
+            if camera_matrix[0, 0] <= 0.0 or camera_matrix[1, 1] <= 0.0:
+                self.get_logger().error(
+                    'camera_info has zero focal length — camera is NOT calibrated '
+                    '(placeholder calibration file?). Refusing it; no poses will be '
+                    'published. Calibrate the camera and update its calibration YAML '
+                    '(see GOPRO_HERO4_SETUP.md).',
+                    throttle_duration_sec=5.0
+                )
+                return
+
+            self.camera_matrix = camera_matrix
             self.dist_coeffs = np.array(msg.d)
             self.camera_info_received = True
 

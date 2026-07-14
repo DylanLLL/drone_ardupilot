@@ -1,0 +1,32 @@
+# GoPro HERO4 camera calibration (real — replaces the shipped placeholder)
+# Calibrated: 2026-07-14, on the laptop, via ros2 camera_calibration (8x6 board, 24mm squares)
+# Chain: HERO4 -> HDMI -> USB capture card @ 1280x720 MJPEG (must match camera_gopro_hero4.yaml)
+# GoPro FOV setting: Medium (recommended default — correct this note if yours differed)
+# Implied HFOV ~79deg; k1=-0.31 barrel distortion is normal for this lens.
+# RECALIBRATE whenever the GoPro FOV setting, capture resolution, or capture card changes.
+image_width: 1280
+image_height: 720
+camera_name: gopro_hero4
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [776.05632,   0.     , 633.45743,
+           0.     , 778.37798, 354.08515,
+           0.     ,   0.     ,   1.     ]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.306666, 0.098772, 0.003021, 0.004337, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [606.06678,   0.     , 646.29334,   0.     ,
+           0.     , 724.3506 , 355.24067,   0.     ,
+           0.     ,   0.     ,   1.     ,   0.     ]

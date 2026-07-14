@@ -1,9 +1,15 @@
 #!/bin/bash
 
 # Drone Initialization Script (tmux version)
-# Launches MAVProxy, MAVROS, and USB Camera in split terminal panes
+# Launches MAVProxy, MAVROS, and the camera in split terminal panes
 
 SESSION_NAME="drone_init"
+
+# Camera profile: selects src/config/camera_<profile>.yaml for usb_cam.
+#   gopro_hero4 (default) = GoPro HERO4 via HDMI-USB capture card
+#   c270                  = legacy Logitech C270 webcam
+# Override per run:  CAMERA_PROFILE=c270 ./start_drone.sh
+CAMERA_PROFILE="${CAMERA_PROFILE:-gopro_hero4}"
 
 echo "=========================================="
 echo "Drone Initialization Script (tmux)"
@@ -11,6 +17,8 @@ echo "=========================================="
 echo ""
 echo "This script will launch all services in a single tmux session"
 echo "with split panes for easy monitoring"
+echo ""
+echo "Camera profile: $CAMERA_PROFILE"
 echo ""
 
 # Check if tmux is installed
@@ -49,10 +57,13 @@ tmux send-keys -t $SESSION_NAME "sleep 5" C-m
 tmux send-keys -t $SESSION_NAME "ros2 run mavros mavros_node --ros-args -p fcu_url:=serial:///dev/serial0:57600" C-m
 
 # Split the right pane vertically and run Camera (wait 10 seconds total)
+# All camera settings (device, resolution, pixel format, calibration file) come
+# from the profile yaml, resolved from the installed package share — no more
+# hardcoded clone paths. \$(...) is escaped so it evaluates inside the pane.
 tmux split-window -v -t $SESSION_NAME
-tmux send-keys -t $SESSION_NAME "echo '=== USB Camera (waiting 10s) ==='" C-m
+tmux send-keys -t $SESSION_NAME "echo '=== Camera: ${CAMERA_PROFILE} (waiting 10s) ==='" C-m
 tmux send-keys -t $SESSION_NAME "sleep 10" C-m
-tmux send-keys -t $SESSION_NAME "ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:=/dev/video0 -p image_width:=640 -p image_height:=480 -p pixel_format:=yuyv -p camera_frame_id:=camera_frame -p camera_info_url:='file:///home/drone/ros2_ws/src/drone_ardupilot/src/config/camera_calibration.yaml' -r __ns:=/camera" C-m
+tmux send-keys -t $SESSION_NAME "ros2 run usb_cam usb_cam_node_exe --ros-args --params-file \$(ros2 pkg prefix warehouse_drone_nav)/share/warehouse_drone_nav/config/camera_${CAMERA_PROFILE}.yaml -r __ns:=/camera" C-m
 
 # Attach to the session
 echo "Attaching to tmux session..."

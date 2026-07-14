@@ -15,7 +15,7 @@ This guide provides step-by-step procedures for testing vision-based position ho
 
 ### Hardware Setup
 - ✅ Pixhawk 6C flight controller connected via USB
-- ✅ Logitech C270 camera connected and working
+- ✅ Camera connected and working (GoPro HERO4 via HDMI-USB capture card — powered over USB, Auto Off = Never; or C270 fallback)
 - ✅ ArUco markers (DICT_4X4_50) printed and positioned
 - ✅ RC transmitter configured with mode switch
 - ✅ Battery fully charged
@@ -64,19 +64,23 @@ Wait for:
 ```
 
 **Terminal 2: Launch Camera**
+
+Camera settings come from a profile file (`camera_gopro_hero4.yaml` = GoPro
+HERO4 via HDMI-USB capture card, the default; `camera_c270.yaml` = C270
+fallback). The `-r __ns:=/camera` remap is required — without it the detector
+never sees the images.
 ```bash
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-  -p video_device:=/dev/video0 \
-  -p image_width:=640 \
-  -p image_height:=480 \
-  -p framerate:=30.0 \
-  -p pixel_format:=yuyv
+  --params-file $(ros2 pkg prefix warehouse_drone_nav)/share/warehouse_drone_nav/config/camera_gopro_hero4.yaml \
+  -r __ns:=/camera
 ```
 
 **Terminal 3: Launch Navigation System**
 ```bash
 cd /home/gdnuser/warehouse_drone_nav
-ros2 launch src/launch/warehouse_nav.launch.py
+# camera:=none because Terminal 2 already runs the camera; drop it to let the
+# launch file start the camera itself (camera:=c270 for the fallback webcam)
+ros2 launch src/launch/warehouse_nav.launch.py camera:=none
 ```
 
 Expected output:

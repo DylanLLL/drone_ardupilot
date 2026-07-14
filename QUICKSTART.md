@@ -73,20 +73,24 @@ ros2 launch mavros px4.launch fcu_url:=/dev/ttyUSB0:921600
 Wait for "CON: Got HEARTBEAT" message
 
 ### Step 3: Start Camera (Terminal 2)
+Camera settings come from a profile file — GoPro HERO4 (via its HDMI-USB
+capture card) is the default, the C270 remains the fallback:
 ```bash
 source ~/ros2_ws/install/setup.bash
+# GoPro HERO4 (default camera)
 ros2 run usb_cam usb_cam_node_exe --ros-args \
-    -p video_device:=/dev/video0 \
-    -p image_width:=640 \
-    -p image_height:=480 \
-    -p camera_frame_id:=camera_frame \
+    --params-file $(ros2 pkg prefix warehouse_drone_nav)/share/warehouse_drone_nav/config/camera_gopro_hero4.yaml \
     -r __ns:=/camera
+# (C270 fallback: use camera_c270.yaml instead)
 ```
 
 ### Step 4: Test ArUco Detection (Terminal 3)
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 launch warehouse_drone_nav aruco_test.launch.py
+# camera:=none because the camera is already running in Terminal 2.
+# Skip Terminal 2 entirely and drop camera:=none to let the launch file
+# start the GoPro itself (camera:=c270 for the fallback webcam).
+ros2 launch warehouse_drone_nav aruco_test.launch.py camera:=none
 ```
 
 ### Step 5: View Detection (Terminal 4 - Optional)

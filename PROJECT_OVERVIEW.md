@@ -139,8 +139,10 @@ Camera → ArUco Detector → Position Estimator → MAVROS → ArduPilot/Pixhaw
 ## Next Steps: Getting ArUco Detection Working
 
 ### Phase 1: Hardware Setup (Do First!)
-1. Mount Logitech C270 camera on drone facing downward
-2. Connect camera to Raspberry Pi via USB
+1. Mount the GoPro HERO4 on the drone facing downward (near the CG, on a
+   vibration-damped mount — see `GOPRO_HERO4_SETUP.md`)
+2. Connect the camera to the Raspberry Pi: GoPro micro-HDMI → HDMI-USB capture
+   card → Pi USB (the C270 fallback connects via plain USB instead)
 3. Connect Pixhawk to RPi via USB/serial
 4. Verify connections
 
@@ -173,15 +175,11 @@ ros2 run camera_calibration cameracalibrator \
 
 ### Phase 4: Test ArUco Detection
 ```bash
-# Terminal 1: Start camera
-ros2 run usb_cam usb_cam_node_exe --ros-args \
-    -p video_device:=/dev/video0 \
-    -r __ns:=/camera
-
-# Terminal 2: Start ArUco detector
+# Terminal 1: Camera + ArUco detector (the launch file starts the camera —
+# GoPro HERO4 profile by default, camera:=c270 for the fallback webcam)
 ros2 launch warehouse_drone_nav aruco_test.launch.py
 
-# Terminal 3: View detections
+# Terminal 2: View detections
 ros2 run rqt_image_view rqt_image_view /aruco/detection_image
 ```
 
@@ -220,13 +218,11 @@ VISO_TYPE = 1 (MAV)
 # Terminal 1: MAVROS
 ros2 launch mavros px4.launch fcu_url:=/dev/ttyUSB0:921600
 
-# Terminal 2: Camera
-ros2 run usb_cam usb_cam_node_exe --ros-args -r __ns:=/camera
-
-# Terminal 3: Navigation system
+# Terminal 2: Navigation system (starts the GoPro camera itself;
+# camera:=c270 for the fallback, camera:=none if started externally)
 ros2 launch warehouse_drone_nav warehouse_nav.launch.py
 
-# Terminal 4: Monitor
+# Terminal 3: Monitor
 ros2 topic echo /mavros/vision_pose/pose
 ```
 
